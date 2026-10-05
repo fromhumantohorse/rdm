@@ -208,6 +208,40 @@ mod tests {
         assert_eq!(content_range(&HeaderMap::new()), None);
     }
 
+    #[test]
+    fn the_tighter_of_the_two_speed_limits_applies() {
+        let limit = |bytes_per_second| {
+            let limit = RateLimit::default();
+            limit.set(bytes_per_second);
+            limit
+        };
+
+        assert_eq!(Job::effective_limit(&limit(0), &limit(0)), 0, "no limit at all");
+        assert_eq!(Job::effective_limit(&limit(4096), &limit(0)), 4096);
+        assert_eq!(Job::effective_limit(&limit(0), &limit(2048)), 2048);
+        assert_eq!(Job::effective_limit(&limit(4096), &limit(2048)), 2048);
+        assert_eq!(Job::effective_limit(&limit(2048), &limit(4096)), 2048);
+    }
+
+    #[test]
+    fn progress_reads_back_what_the_transfer_published() {
+        let progress = Progress::default();
+        progress.downloaded.store(300, Ordering::Relaxed);
+        progress.total.store(1000, Ordering::Relaxed);
+        progress.active.store(4, Ordering::Relaxed);
+        let piece = domain::Segment::new(0, 999);
+
+        progress.set_pieces(vec![piece]);
+
+        assert_eq!(progress.snapshot(), (300, 1000, 4));
+        assert_eq!(progress.pieces(), vec![piece]);
+    }
+
+    #[test]
+    fn the_resume_state_sits_next_to_the_file() {
+        assert_eq!(state_path(Path::new("dir/a.mp4")), PathBuf::from("dir/a.mp4.rdm"));
+    }
+
     /// Regression: a download's task held the future of a split (video + audio) download inline,
     /// 128 KB whatever the download, because nested futures are laid out side by side.
     #[test]

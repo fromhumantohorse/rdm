@@ -130,7 +130,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn assistant_arguments() {
+    fn the_assistant_runs_only_with_its_five_arguments() {
         assert!(!run_assistant(&["--minimized".into()]));
         assert!(!run_assistant(&["--other".into(), "a".into(), "1".into(), "b".into(), "c".into()]));
         assert!(!run_assistant(&[HELPER_FLAG.into(), "a.msi".into(), "1".into(), "rdm.exe".into()]), "the SHA-256 is required");

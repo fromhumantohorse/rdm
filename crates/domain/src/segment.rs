@@ -45,8 +45,29 @@ mod tests {
     }
 
     #[test]
-    fn respects_min_len() {
+    fn no_piece_is_smaller_than_the_minimum() {
         assert_eq!(plan_segments(1000, 32, 500).len(), 2);
+    }
+
+    #[test]
+    fn a_segment_is_done_once_its_last_byte_is_fetched() {
+        let mut segment = Segment::new(10, 19);
+        assert!(!segment.is_done(), "nothing fetched");
+
+        segment.pos = 19;
+        assert!(!segment.is_done(), "the last byte still to fetch");
+
+        segment.pos = 20;
+        assert!(segment.is_done());
+    }
+
+    /// More connections than the size divides into evenly: no piece is planned past the end.
+    #[test]
+    fn never_plans_an_empty_piece() {
+        let segments = plan_segments(10, 6, 1);
+
+        assert_eq!(segments.len(), 5);
+        assert!(segments.iter().all(|s| s.start <= s.end && s.end < 10));
     }
 
     /// A size the server made up (the largest a header can say) is split like any other.

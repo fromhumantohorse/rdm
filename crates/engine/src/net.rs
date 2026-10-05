@@ -206,12 +206,10 @@ fn local_v6(ip: Ipv6Addr) -> bool {
 /// (`64:ff9b::/96`, `64:ff9b:1::/48`), 6to4 (`2002::/16`) and the old IPv4-compatible `::a.b.c.d`.
 /// `64:ff9b::192.168.1.1` is the router on a NAT64 network: judged as 192.168.1.1.
 fn embedded_v4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
-    let s = ip.segments();
-    let low = || Ipv4Addr::from((u32::from(s[6]) << 16) | u32::from(s[7]));
-    match s {
-        [0x64, 0xff9b, 0, 0, 0, 0, ..] | [0x64, 0xff9b, 1, ..] => Some(low()),
-        [0x2002, hi, lo, ..] => Some(Ipv4Addr::from((u32::from(hi) << 16) | u32::from(lo))),
-        [0, 0, 0, 0, 0, 0, ..] if !ip.is_loopback() && !ip.is_unspecified() => Some(low()),
+    let [_, _, a, b, c, d, .., w, x, y, z] = ip.octets();
+    match ip.segments() {
+        [0x64, 0xff9b, 0, 0, 0, 0, ..] | [0x64, 0xff9b, 1, ..] | [0, 0, 0, 0, 0, 0, ..] => Some(Ipv4Addr::new(w, x, y, z)),
+        [0x2002, ..] => Some(Ipv4Addr::new(a, b, c, d)),
         _ => None,
     }
 }
@@ -300,9 +298,54 @@ mod tests {
         ] {
             assert!(is_local(&u(local)), "{local}");
         }
-        for public in ["https://example.com/", "http://8.8.8.8/", "http://[2001:4860::8888]/", "http://172.32.0.1/"] {
+        for public in ["https://example.com/", "http://8.8.8.8/", "http://[2001:4860::8888]/", "http://172.32.0.1/", "http://100.128.0.1/"] {
             assert!(!is_local(&u(public)), "{public}");
         }
+    }
+
+    #[test]
+    fn resolved_addresses_are_judged_like_literal_ones() {
+        assert!(local_ip("192.168.1.20".parse().unwrap()));
+        assert!(local_ip("fd00::1".parse().unwrap()));
+        assert!(!local_ip("8.8.8.8".parse().unwrap()));
+        assert!(!local_ip("2001:4860::8888".parse().unwrap()));
+    }
+
+    #[test]
+    fn a_refused_name_is_named_in_its_error() {
+        assert!(LanBlocked("nas.example".into()).to_string().starts_with("nas.example: local network"));
+    }
+
+    fn some_address() -> Arc<[SocketAddr]> {
+        Arc::from([SocketAddr::from(([8, 8, 8, 8], 0))])
+    }
+
+    #[test]
+    fn a_full_cache_forgets_its_stale_names_first() {
+        let dns = CachedDns::default();
+        let stale = Instant::now() - DNS_TTL - Duration::from_secs(1);
+        for i in 0..DNS_MAX_ENTRIES / 2 {
+            let mut entries = dns.entries.lock().unwrap();
+            entries.insert(format!("old{i}.example"), (stale, some_address()));
+            entries.insert(format!("new{i}.example"), (Instant::now(), some_address()));
+        }
+
+        dns.store("next.example".into(), some_address());
+
+        assert!(dns.fresh("new0.example").is_some() && dns.fresh("next.example").is_some());
+        assert!(!dns.entries.lock().unwrap().contains_key("old0.example"));
+    }
+
+    #[test]
+    fn a_cache_full_of_fresh_names_starts_over() {
+        let dns = CachedDns::default();
+        for i in 0..DNS_MAX_ENTRIES {
+            dns.store(format!("host{i}.example"), some_address());
+        }
+
+        dns.store("next.example".into(), some_address());
+
+        assert_eq!(dns.entries.lock().unwrap().len(), 1);
     }
 
     /// IPv6 addresses a network translates to IPv4 are judged by the IPv4 address they carry.
@@ -361,6 +404,8 @@ mod tests {
         assert!(same("http://10.0.0.2/a", "http://10.0.0.2:8080/b"));
         assert!(!same("http://10.0.0.2/", "http://10.0.0.3/"));
         assert!(!same("http://127.0.0.1/", "http://localhost/"));
+        assert!(same("http://[2001:db8::1]/a", "http://[2001:db8::1]:8080/b"));
+        assert!(!same("http://[2001:db8::1]/", "http://[2001:db8::2]/"));
         // A short name under a country code is a site, not a registry: its CDN is the same site.
         assert!(same("https://www.zdf.de/", "https://cdn.zdf.de/seg.ts"));
         assert!(same("https://www.tf1.fr/", "https://videos.tf1.fr/"));

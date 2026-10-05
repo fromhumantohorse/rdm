@@ -185,7 +185,7 @@ mod tests {
     }
 
     #[test]
-    fn formats_are_recognised() {
+    fn a_package_is_recognised_by_its_first_bytes() {
         assert!(format_matches("a.msi", &[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1, 0]));
         assert!(format_matches("a.tar.gz", &[0x1F, 0x8B, 8]));
         assert!(format_matches("a.deb", b"!<arch>\ndebian"));

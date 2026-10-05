@@ -165,7 +165,7 @@ mod tests {
     }
 
     #[test]
-    fn lifecycle() {
+    fn a_download_runs_pauses_resumes_then_completes_for_good() {
         let mut d = sample();
         d.start().unwrap();
         d.pause().unwrap();

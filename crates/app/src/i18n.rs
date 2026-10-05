@@ -313,7 +313,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn locales() {
+    fn system_locales_map_to_languages() {
         assert_eq!(Language::from_locale("fr-FR"), Some(French));
         assert_eq!((Language::from_locale("FR_ca"), Language::from_locale("fr")), (Some(French), Some(French)));
         assert_eq!(Language::from_locale("pt-BR"), Some(Portuguese));
@@ -324,7 +324,7 @@ mod tests {
     }
 
     #[test]
-    fn switching_language() {
+    fn texts_follow_the_language_in_use() {
         let _one_at_a_time = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         set(French);
         assert_eq!(tr!("Bonjour", "Hello"), "Bonjour");
@@ -339,7 +339,7 @@ mod tests {
     }
 
     #[test]
-    fn translated_texts() {
+    fn other_languages_read_their_tables() {
         let _one_at_a_time = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         set(German);
         assert_eq!(tr!("Annuler", "Cancel"), "Abbrechen");
@@ -355,7 +355,7 @@ mod tests {
     }
 
     #[test]
-    fn placeholders() {
+    fn placeholders_are_filled_and_lone_braces_left_alone() {
         let args = [("", "x".to_owned()), ("n", "3".to_owned())];
         assert_eq!(render("a {} b {n} c", &args), "a x b 3 c");
         assert_eq!(render("no placeholder, a lone { brace", &args), "no placeholder, a lone { brace");
@@ -520,7 +520,7 @@ mod tests {
     }
 
     #[test]
-    fn plural_forms() {
+    fn each_language_picks_its_own_plural_form() {
         assert_eq!([1, 2, 5, 11, 21, 22, 25].map(|n| plural_form(Russian, n)), [0, 1, 2, 2, 0, 1, 2]);
         assert_eq!([1, 2, 5, 12, 22, 112].map(|n| plural_form(Polish, n)), [0, 1, 2, 2, 1, 2]);
         assert_eq!([0, 1, 2].map(|n| plural_form(Portuguese, n)), [0, 0, 1]);

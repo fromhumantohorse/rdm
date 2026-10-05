@@ -152,7 +152,7 @@ mod tests {
     }
 
     #[test]
-    fn error_lines() {
+    fn yt_dlps_reason_is_its_last_error_line() {
         assert_eq!(tail(b"[youtube] x\nERROR: [youtube] x: Sign in to confirm you're not a bot\n"), "ERROR: [youtube] x: Sign in to confirm you're not a bot");
         assert_eq!(tail(b"boom\n\n"), "boom");
         assert_eq!(tail(b""), "failed");

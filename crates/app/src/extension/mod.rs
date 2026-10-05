@@ -220,7 +220,7 @@ mod tests {
     }
 
     #[test]
-    fn crc_and_zip_layout() {
+    fn packages_are_zip_archives_with_their_checksums() {
         assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
         let z = zip([("a.txt", b"hi".as_slice())].into_iter());
         assert_eq!(&z[..4], b"PK\x03\x04");

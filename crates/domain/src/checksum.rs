@@ -57,7 +57,7 @@ impl Checksum {
     pub fn parse(input: &str) -> Option<Self> {
         let s = input.trim();
         let (label, rest) = match s.split_once(':') {
-            Some((label, rest)) if label.len() <= 8 && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') => {
+            Some((label, rest)) if label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') => {
                 (Some(label.to_ascii_lowercase().replace('-', "")), rest)
             }
             _ => (None, s),
@@ -119,6 +119,13 @@ mod tests {
             assert_eq!(Checksum::parse(&pasted).map(|c| c.to_string()), Some(expected.clone()), "{pasted}");
         }
         assert_eq!(Checksum::parse("MD5:d41d8cd98f00b204e9800998ecf8427e").map(|c| c.algo()), Some(HashAlgo::Md5));
+    }
+
+    #[test]
+    fn a_digest_followed_by_the_files_address_is_still_read() {
+        let pasted = format!("{EMPTY_SHA256}  https://example.com/ubuntu.iso");
+
+        assert_eq!(Checksum::parse(&pasted).map(|c| c.algo()), Some(HashAlgo::Sha256));
     }
 
     #[test]

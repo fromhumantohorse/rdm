@@ -56,6 +56,8 @@ pub(crate) struct Pace {
     hold_until: AtomicU64,
     /// Where the ceiling is remembered (`host:port`).
     host: Option<String>,
+    #[cfg(test)]
+    travelled: AtomicU64,
 }
 
 impl Pace {
@@ -79,6 +81,8 @@ impl Pace {
             probe_wait: AtomicU64::new(millis(PROBE_WAIT)),
             hold_until: AtomicU64::new(0),
             host,
+            #[cfg(test)]
+            travelled: AtomicU64::new(0),
         };
         // A recent download was told to come back later: this one too.
         if let Some(wait) = known.hold_until.and_then(|until| until.checked_duration_since(Instant::now())) {
@@ -89,7 +93,15 @@ impl Pace {
     }
 
     fn now(&self) -> u64 {
-        u64::try_from(self.epoch.elapsed().as_millis()).unwrap_or(u64::MAX - 1) + 1
+        let now = u64::try_from(self.epoch.elapsed().as_millis()).unwrap_or(u64::MAX - 1) + 1;
+        #[cfg(test)]
+        let now = now + self.travelled.load(Relaxed);
+        now
+    }
+
+    #[cfg(test)]
+    fn travel(&self, by: Duration) {
+        self.travelled.fetch_add(millis(by), Relaxed);
     }
 
     /// Connections allowed right now.
@@ -295,35 +307,58 @@ struct Known {
     at: Instant,
 }
 
-impl Default for Known {
-    fn default() -> Self {
-        Self { accepted: usize::MAX, counts_requests: false, hold_until: None, at: Instant::now() }
+impl Known {
+    fn new(at: Instant) -> Self {
+        Self { accepted: usize::MAX, counts_requests: false, hold_until: None, at }
+    }
+
+    fn fresh(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.at) < MEMORY
     }
 }
 
-fn memory() -> std::sync::MutexGuard<'static, HashMap<String, Known>> {
-    static HOSTS: std::sync::OnceLock<Mutex<HashMap<String, Known>>> = std::sync::OnceLock::new();
-    HOSTS.get_or_init(Mutex::default).lock().unwrap_or_else(PoisonError::into_inner)
+impl Default for Known {
+    fn default() -> Self {
+        Self::new(Instant::now())
+    }
+}
+
+/// The servers met recently, at most `MEMORY_MAX_HOSTS` of them.
+#[derive(Default)]
+struct Servers(HashMap<String, Known>);
+
+impl Servers {
+    fn recall(&self, host: &str, now: Instant) -> Option<Known> {
+        self.0.get(host).filter(|k| k.fresh(now)).copied()
+    }
+
+    fn remember(&mut self, host: &str, now: Instant, change: impl FnOnce(&mut Known)) {
+        if self.0.len() >= MEMORY_MAX_HOSTS && !self.0.contains_key(host) {
+            self.0.retain(|_, k| k.fresh(now));
+            if self.0.len() >= MEMORY_MAX_HOSTS {
+                self.0.clear();
+            }
+        }
+        let known = self.0.entry(host.to_owned()).or_insert_with(|| Known::new(now));
+        if !known.fresh(now) {
+            *known = Known::new(now);
+        }
+        change(known);
+        known.at = now;
+    }
+}
+
+fn servers() -> std::sync::MutexGuard<'static, Servers> {
+    static SERVERS: std::sync::OnceLock<Mutex<Servers>> = std::sync::OnceLock::new();
+    SERVERS.get_or_init(Mutex::default).lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 fn recall(host: &str) -> Option<Known> {
-    memory().get(host).filter(|k| k.at.elapsed() < MEMORY).copied()
+    servers().recall(host, Instant::now())
 }
 
 fn remember(host: &str, change: impl FnOnce(&mut Known)) {
-    let mut hosts = memory();
-    if hosts.len() >= MEMORY_MAX_HOSTS && !hosts.contains_key(host) {
-        hosts.retain(|_, k| k.at.elapsed() < MEMORY);
-        if hosts.len() >= MEMORY_MAX_HOSTS {
-            hosts.clear();
-        }
-    }
-    let known = hosts.entry(host.to_owned()).or_default();
-    if known.at.elapsed() >= MEMORY {
-        *known = Known::default();
-    }
-    change(known);
-    known.at = Instant::now();
+    servers().remember(host, Instant::now(), change);
 }
 
 /// Under a speed limit (bytes per second, 0 = none), more connections only share the same bytes
@@ -474,19 +509,188 @@ mod tests {
         assert_eq!(when, [0, 1, 2, 3], "doubling pays off at every tick");
     }
 
+    /// A line already full: an increase, 2 s for the new connections to settle, 3 s of patience,
+    /// then 15 s on the plateau before the next try — 39 ticks of half a second in all.
     #[test]
-    fn a_full_line_stops_growing_then_probes_again() {
-        let mut g = Growth::default();
-        let flat = 5_000_000;
-        let mut when = Vec::new();
-        for tick in 0..120 {
-            if g.more(flat, false) {
-                when.push(tick);
-            }
+    fn a_full_line_is_tried_again_after_settling_patience_and_a_pause() {
+        let mut growth = Growth::default();
+
+        let tries: Vec<usize> = (0..120).filter(|_| growth.more(5_000_000, false)).collect();
+
+        assert_eq!(tries, [0, 39, 78, 117]);
+    }
+
+    /// Outside the slow start a single good tick is not enough: the last two are averaged.
+    #[test]
+    fn growth_is_judged_on_the_last_two_ticks() {
+        let mut growth = Growth::default();
+        assert!(growth.more(100, false), "the first increase");
+        for _ in 0..SETTLE_TICKS {
+            assert!(!growth.more(100, false), "settling");
         }
-        // The first try, then nothing until the plateau is probed again.
-        assert!(when.len() <= 4, "{when:?}");
-        assert!(when.windows(2).all(|w| w[1] - w[0] >= usize::from(REPROBE_TICKS)), "{when:?}");
+
+        assert!(!growth.more(115, false), "(100 + 115) / 2 is less than 10 % better");
+    }
+
+    #[test]
+    fn a_new_download_starts_slowly_and_spares_no_request() {
+        let pace = Pace::new(32, None);
+        assert!(pace.slow_start() && !pace.spare_requests() && !pace.counts_requests());
+
+        pace.trouble(8);
+
+        assert!(!pace.slow_start(), "trouble ends the slow start");
+    }
+
+    #[test]
+    fn after_trouble_one_connection_is_added_once_the_cooldown_is_over() {
+        let pace = Pace::new(32, None);
+        pace.trouble(8);
+        assert_eq!(pace.ramp(usize::MAX, true, 6), 6, "cooling down");
+
+        pace.travel(COOLDOWN);
+
+        assert_eq!(pace.ramp(usize::MAX, true, 6), 7, "one at a time from now on");
+    }
+
+    /// A server that took 4 connections: kept to 4, then one more is tried now and then, each try
+    /// waiting twice as long as the one before.
+    #[test]
+    fn one_more_connection_is_tried_once_in_a_while() {
+        let pace = Pace::new(32, None);
+        pace.travel(Duration::from_secs(1));
+        pace.refuse(8, None, false);
+        assert_eq!(pace.ramp(usize::MAX, true, 4), 4);
+
+        pace.travel(COOLDOWN);
+        assert_eq!(pace.ramp(usize::MAX, true, 4), 4, "cooled down, but the server took 4");
+
+        pace.travel(PROBE_WAIT - COOLDOWN);
+        assert_eq!(pace.ramp(usize::MAX, true, 4), 5);
+        assert_eq!(pace.ramp(usize::MAX, true, 5), 5, "the next try waits");
+
+        pace.travel(2 * PROBE_WAIT);
+        assert_eq!(pace.ramp(usize::MAX, true, 5), 6);
+    }
+
+    #[test]
+    fn a_server_counting_requests_is_never_asked_for_one_more() {
+        let pace = Pace::new(32, None);
+        pace.refuse(8, None, true);
+        pace.refuse(8, None, true);
+        assert!(pace.counts_requests());
+        assert_eq!(pace.ramp(usize::MAX, true, 4), 4);
+
+        pace.travel(2 * PROBE_WAIT);
+
+        assert_eq!(pace.ramp(usize::MAX, true, 4), 4, "each try would cost a refusal and its wait");
+    }
+
+    #[test]
+    fn no_connection_is_tried_above_the_configured_maximum() {
+        let host = "full.example:443".to_owned();
+        let pace = Pace::new(4, Some(host.clone()));
+        pace.travel(Duration::from_secs(1));
+        pace.refuse(4, None, false);
+        pace.ramp(usize::MAX, true, 4);
+        pace.travel(PROBE_WAIT);
+
+        for _ in 0..3 {
+            assert_eq!(pace.ramp(usize::MAX, true, 4), 4);
+        }
+        assert_eq!(Pace::new(32, Some(host)).limit(), 4, "no try above it remembered either");
+    }
+
+    #[test]
+    fn a_wait_asked_in_a_recent_download_stops_growth_until_it_is_over() {
+        let host = "patient.example:443".to_owned();
+        Pace::new(32, Some(host.clone())).refuse(8, Some(Duration::from_secs(10)), false);
+        let next = Pace::new(32, Some(host));
+        assert_eq!(next.ramp(usize::MAX, true, 8), 8, "no new connection before the server's time");
+
+        next.travel(Duration::from_secs(11));
+
+        assert_eq!(next.ramp(usize::MAX, true, 8), 16, "then the slow start goes on");
+    }
+
+    #[test]
+    fn the_servers_wait_is_counted_from_its_refusal() {
+        let pace = Pace::new(32, None);
+        pace.travel(Duration::from_secs(5));
+
+        pace.refuse(8, Some(Duration::from_secs(10)), false);
+
+        let hold = pace.hold();
+        assert!(hold > Duration::from_secs(9) && hold <= Duration::from_secs(10), "{hold:?}");
+    }
+
+    #[test]
+    fn the_last_connection_gives_up_only_after_three_minutes_without_data() {
+        let pace = Pace::new(4, None);
+        pace.travel(STALL_LIMIT - Duration::from_secs(1));
+        assert!(!pace.stalled());
+
+        pace.travel(Duration::from_secs(2));
+        assert!(pace.stalled());
+
+        pace.progressed();
+        assert!(!pace.stalled(), "a byte arrived");
+    }
+
+    #[test]
+    fn what_is_known_of_a_server_is_forgotten_after_half_an_hour() {
+        let mut servers = Servers::default();
+        let then = Instant::now();
+        servers.remember("cdn.example:443", then, |k| k.accepted = 4);
+
+        let accepted = |at: Instant| servers.recall("cdn.example:443", at).map(|k| k.accepted);
+
+        assert_eq!(accepted(then + Duration::from_secs(29 * 60)), Some(4));
+        assert_eq!(accepted(then + Duration::from_secs(30 * 60)), None);
+    }
+
+    #[test]
+    fn a_server_remembered_again_after_half_an_hour_starts_afresh() {
+        let mut servers = Servers::default();
+        let then = Instant::now();
+        servers.remember("cdn.example:443", then, |k| k.accepted = 4);
+
+        let later = then + Duration::from_secs(31 * 60);
+        servers.remember("cdn.example:443", later, |_| {});
+
+        assert_eq!(servers.recall("cdn.example:443", later).map(|k| k.accepted), Some(usize::MAX));
+    }
+
+    #[test]
+    fn a_full_memory_makes_room_by_forgetting_the_old_servers() {
+        let mut servers = Servers::default();
+        let then = Instant::now();
+        for i in 0..MEMORY_MAX_HOSTS {
+            servers.remember(&format!("old{i}.example:443"), then, |_| {});
+        }
+
+        let later = then + Duration::from_secs(31 * 60);
+        servers.remember("new.example:443", later, |k| k.accepted = 2);
+
+        assert_eq!(servers.0.len(), 1);
+        assert_eq!(servers.recall("new.example:443", later).map(|k| k.accepted), Some(2));
+    }
+
+    #[test]
+    fn a_full_memory_of_recent_servers_starts_over_for_a_new_one_only() {
+        let mut servers = Servers::default();
+        let now = Instant::now();
+        for i in 0..MEMORY_MAX_HOSTS {
+            servers.remember(&format!("busy{i}.example:443"), now, |_| {});
+        }
+
+        servers.remember("busy0.example:443", now, |k| k.accepted = 3);
+        servers.remember("busy0.example:443", now, |_| {});
+        assert_eq!(servers.0.len(), MEMORY_MAX_HOSTS, "a server already known takes no room");
+        assert_eq!(servers.recall("busy0.example:443", now).map(|k| k.accepted), Some(3), "and keeps what was learned");
+
+        servers.remember("new.example:443", now, |_| {});
+        assert_eq!(servers.0.len(), 1);
     }
 
     #[test]

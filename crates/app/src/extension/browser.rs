@@ -337,7 +337,7 @@ mod tests {
 
     /// Same cases as `browserKey` in `extension/test/shared.test.mjs`.
     #[test]
-    fn keys_of_browser_names() {
+    fn a_browsers_key_is_the_first_telling_word_of_its_name() {
         for (name, key) in [
             ("Google Chrome", "chrome"),
             ("Microsoft Edge", "edge"),
@@ -371,7 +371,7 @@ mod tests {
     }
 
     #[test]
-    fn browsers_by_key() {
+    fn a_browser_is_known_by_its_key_whatever_it_is() {
         let firefox = Browser::from_key("firefox").unwrap();
         assert_eq!((firefox.name(), firefox.flavour()), ("Firefox", Flavour::Firefox));
         let thorium = Browser::from_key("thorium").unwrap();

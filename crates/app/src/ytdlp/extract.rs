@@ -135,7 +135,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn video_ids() {
+    fn only_eleven_character_video_ids_are_accepted() {
         assert!(valid_id("jNQXAC9IVRw"));
         assert!(valid_id("a-b_c123456"));
         assert!(!valid_id("jNQXAC9IVR"));

@@ -143,7 +143,7 @@ mod tests {
     }
 
     #[test]
-    fn categories() {
+    fn files_are_sorted_by_their_extension() {
         assert_eq!(Category::of("Film (1080p).MP4"), Category::Video);
         assert_eq!(Category::of("song.m4a"), Category::Music);
         assert_eq!(Category::of("part.r07"), Category::Archive);
@@ -151,6 +151,19 @@ mod tests {
         assert_eq!(Category::of("setup.exe"), Category::Program);
         assert_eq!(Category::of("book.epub"), Category::Document);
         assert_eq!(Category::of("README"), Category::Other);
+    }
+
+    /// Only `r` followed by digits is a part of a split archive: `.rtf` and `.rm` are not.
+    #[test]
+    fn extensions_starting_with_r_keep_their_own_category() {
+        assert_eq!(Category::of("letter.rtf"), Category::Document);
+        assert_eq!(Category::of("clip.rm"), Category::Video);
+    }
+
+    #[test]
+    fn categories_are_named_in_french_and_in_english() {
+        assert_eq!((Category::Video.label(false), Category::Video.label(true)), ("Vidéos", "Videos"));
+        assert_eq!((Category::Archive.label(false), Category::Archive.label(true)), ("Compressés", "Archives"));
     }
 
     /// Regression: a `#` in a title was taken for a URL fragment → "Other" instead of "Videos".

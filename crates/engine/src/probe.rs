@@ -318,7 +318,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn names() {
+    fn a_files_name_comes_from_its_disposition_or_its_link() {
         let u: Url = "https://x.io/dir/My%20File.zip?x=1".parse().unwrap();
         assert_eq!(suggest_file_name(&u, None), "My File.zip");
         assert_eq!(suggest_file_name(&u, Some("attachment; filename=\"a:b.iso\"")), "a_b.iso");
@@ -326,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn a_files_version() {
+    fn a_files_version_is_its_real_date_or_its_strong_tag() {
         let headers = |pairs: &[(header::HeaderName, &str)]| pairs.iter().map(|(k, v)| (k.clone(), v.parse().unwrap())).collect::<HeaderMap>();
         let date = "Tue, 21 Oct 2025 07:28:00 GMT";
         assert_eq!(version_of(&headers(&[(header::ETAG, "\"abc\""), (header::LAST_MODIFIED, date)])), Some(format!("date:{date}")));
