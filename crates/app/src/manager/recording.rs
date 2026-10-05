@@ -154,12 +154,15 @@ impl Manager {
             for (ms, track) in r.parts.keys() {
                 let _ = fs::remove_file(r.part(*ms, *track));
             }
+            let size = result.is_ok().then(|| {
+                mark_from_internet(&r.target);
+                fs::metadata(&r.target).map_or(0, |m| m.len())
+            });
             let mut finished = None;
             this.update(r.id, |e| {
                 let _ = match result {
                     Ok(()) => {
-                        mark_from_internet(&r.target);
-                        let size = fs::metadata(&r.target).map_or(0, |m| m.len());
+                        let size = size.unwrap_or(0);
                         e.progress.downloaded.store(size, Relaxed);
                         e.progress.total.store(size, Relaxed);
                         finished = r.target.file_name().map(|n| n.to_string_lossy().into_owned());

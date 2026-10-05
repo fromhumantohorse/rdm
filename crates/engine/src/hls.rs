@@ -265,11 +265,11 @@ async fn download(
     file.set_len(resume.bytes).await?;
     file.seek(SeekFrom::End(0)).await?;
 
-    let total_parts = parts.len() as u64;
+    let total_parts = parts.len();
     let report = |r: &Resume| {
         progress.downloaded.store(r.bytes, Relaxed);
-        if r.done > 0 {
-            progress.total.store(r.bytes * total_parts / r.done as u64, Relaxed);
+        if let Some(total) = estimated_total(r, total_parts) {
+            progress.total.store(total, Relaxed);
         }
     };
     report(&resume);
@@ -328,6 +328,13 @@ async fn download(
             other
         }
     }
+}
+
+/// The stream's size, judged from the segments written so far (`None` before the first one).
+fn estimated_total(written: &Resume, parts: usize) -> Option<u64> {
+    let (done, parts) = (u128::try_from(written.done).ok()?, u128::try_from(parts).ok()?);
+    let total = u128::from(written.bytes).checked_mul(parts)?.checked_div(done)?;
+    Some(u64::try_from(total).unwrap_or(u64::MAX))
 }
 
 async fn save_state(state: &Path, resume: &Resume) -> std::io::Result<()> {
@@ -738,6 +745,15 @@ mod tests {
 
         assert!(matches!(decrypt(&[0x42; 16], &[0; 16], &segment), Err(EngineError::Playlist("decryption failed"))));
         assert!(matches!(decrypt(&[0x42; 8], &[0; 16], &segment), Err(EngineError::Playlist("invalid AES key"))));
+    }
+
+    #[test]
+    fn the_size_is_judged_from_the_segments_written() {
+        let after = |done, bytes| Resume { done, bytes };
+
+        assert_eq!(estimated_total(&after(0, 0), 10), None, "nothing written yet");
+        assert_eq!(estimated_total(&after(2, 2_000), 10), Some(10_000));
+        assert_eq!(estimated_total(&after(1, u64::MAX / 2), MAX_PARTS), Some(u64::MAX), "huge segments: capped, no overflow");
     }
 
     #[test]

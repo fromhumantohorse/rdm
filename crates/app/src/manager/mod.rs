@@ -135,6 +135,8 @@ pub struct Manager {
     generation: AtomicU64,
     saved_generation: Mutex<u64>,
     settings_dirty: AtomicBool,
+    /// The last write of RDM's own files failed (said once, until one succeeds).
+    write_failing: AtomicBool,
     closing: AtomicBool,
     closed: Once,
     /// Total speed over the last minute, one sample per `TICK` (the UI's chart).
@@ -204,9 +206,7 @@ impl Manager {
             let _ = crate::settings::create_private_dir(dir);
         }
         let mut secrets = Secrets::load();
-        if secrets.adopt_virustotal_key(&mut settings, Secrets::save) {
-            settings.save();
-        }
+        let key_moved = secrets.adopt_virustotal_key(&mut settings, Secrets::save);
         let limit = Arc::new(RateLimit::default());
         limit.set(u64::from(settings.speed_limit_kib) * 1024);
         let this = Arc::new(Self {
@@ -232,7 +232,8 @@ impl Manager {
             dirty: AtomicBool::new(false),
             generation: AtomicU64::new(0),
             saved_generation: Mutex::new(0),
-            settings_dirty: AtomicBool::new(false),
+            settings_dirty: AtomicBool::new(key_moved),
+            write_failing: AtomicBool::new(false),
             closing: AtomicBool::new(false),
             closed: Once::new(),
             history: Mutex::new(std::iter::repeat_n(0.0, HISTORY).collect()),
@@ -245,11 +246,24 @@ impl Manager {
             custom_browsers: Mutex::new(load_json(CUSTOM_BROWSERS_FILE)),
             opened_to_install: Mutex::default(),
         });
+        this.save_settings();
         this.spawn_ticker();
         this.spawn_update_checks();
         this.spawn_clipboard_watch();
         this.schedule();
         this
+    }
+
+    /// The outcome of a write of RDM's own files (settings, the list, passwords): a failure is
+    /// said once — a full or read-only disk fails every retry — until a write succeeds again.
+    pub(crate) fn saved(&self, result: std::io::Result<()>) {
+        match result {
+            Ok(()) => self.write_failing.store(false, Release),
+            Err(e) if !self.write_failing.swap(true, AcqRel) => {
+                self.notice(true, &trf!("RDM ne peut pas enregistrer ses fichiers : {e}", "RDM cannot save its files: {e}", e = e));
+            }
+            Err(_) => {}
+        }
     }
 
     /// A message for the window's next frame (kept, a few, while it is closed).
@@ -282,7 +296,8 @@ impl Manager {
             changed
         };
         if changed {
-            lock(&self.secrets).save();
+            let saved = lock(&self.secrets).save();
+            self.saved(saved);
             self.forget_clients(); // the proxy password may have changed
         }
     }
@@ -361,10 +376,14 @@ impl Manager {
         self.schedule();
     }
 
-    /// Writes the settings if they changed since the last save.
+    /// Writes the settings if they changed since the last save (tried again next time if it fails).
     pub fn save_settings(&self) {
         if self.settings_dirty.swap(false, AcqRel) {
-            lock(&self.settings).save(); // under the lock: saves land in the order of the changes
+            let saved = lock(&self.settings).save(); // under the lock: saves land in the order of the changes
+            if saved.is_err() {
+                self.settings_dirty.store(true, Release);
+            }
+            self.saved(saved);
         }
     }
 
@@ -544,6 +563,11 @@ impl Manager {
                 Err(reason) => Err(reason),
             };
             let progressed = progress.downloaded.load(Relaxed) > before;
+            if matches!(result, Ok(Ok(Outcome::Completed))) {
+                // Marked before the list shows it complete (and can open it).
+                let target = job.target.clone();
+                let _ = tokio::task::spawn_blocking(move || mark_from_internet(&target)).await;
+            }
             let auto_proxy = this.auto_proxy();
             let (mut finished, mut verify) = (None, false);
             this.update(id, |e| {
@@ -555,7 +579,6 @@ impl Manager {
                 let _ = match &result {
                     Err(reason) => e.download.fail(reason.clone()),
                     Ok(Ok(Outcome::Completed)) => {
-                        mark_from_internet(&e.download.target);
                         let _ = e.download.start(); // a pause may have raced the last byte
                         finished = Some(e.name.clone());
                         verify = e.download.checksum.is_some();
@@ -599,20 +622,23 @@ impl Manager {
 
     /// Replaces the link of a download that stopped working (expired, moved) and resumes it where
     /// it was. The new link must lead to the same file: when the server tells its size and it
-    /// differs, the change is refused (the parts already downloaded would not fit).
+    /// differs, the change is refused (the parts already downloaded would not fit). A stream (HLS)
+    /// or a video fetched with a separate audio track has no single size to compare.
     pub fn change_url(self: &Arc<Self>, id: DownloadId, url: Url) {
-        let Some((total, headers, via_proxy, insecure)) =
-            self.view(|es| es.iter().find(|e| e.download.id == id).map(|e| (e.progress.total.load(Relaxed), to_header_map(&e.headers), e.via_proxy, e.download.insecure)))
-        else {
+        let Some((total, headers, via_proxy, insecure, split)) = self.view(|es| {
+            es.iter().find(|e| e.download.id == id).map(|e| {
+                (e.progress.total.load(Relaxed), to_header_map(&e.headers), e.via_proxy, e.download.insecure, e.download.audio.is_some())
+            })
+        }) else {
             return;
         };
         let this = self.clone();
         self.rt.spawn(async move {
             let size = match this.client_for_url(&url, via_proxy, insecure).await {
-                Ok(client) => engine::probe_once(&client, &url, &headers).await.ok().and_then(|p| p.size),
+                Ok(client) => engine::probe_once(&client, &url, &headers).await.ok().filter(|p| !p.hls).and_then(|p| p.size),
                 Err(_) => None,
             };
-            if total > 0 && size.is_some_and(|s| s != total) {
+            if !split && total > 0 && size.is_some_and(|s| s != total) {
                 let (have, got) = (crate::ui::size_text(total), crate::ui::size_text(size.unwrap_or(0)));
                 this.notice(true, &trf!(
                     "Lien refusé : le fichier fait {got}, pas {have} (ce n'est pas le même)",
@@ -709,10 +735,17 @@ impl Manager {
             (self.generation.fetch_add(1, Relaxed) + 1, entries.iter().map(Entry::stored).collect::<Vec<_>>())
         };
         let mut saved = lock(&self.saved_generation);
-        if *saved < generation {
-            save_json(STORE, &stored);
-            *saved = generation;
+        if *saved >= generation {
+            return;
         }
+        let written = save_json(STORE, &stored);
+        if written.is_ok() {
+            *saved = generation;
+        } else {
+            self.dirty.store(true, Release);
+        }
+        drop(saved);
+        self.saved(written);
     }
 
     fn repaint(&self) {

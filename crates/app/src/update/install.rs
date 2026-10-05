@@ -198,17 +198,21 @@ mod linux {
 #[cfg(windows)]
 mod imp {
     use std::{
+        ffi::OsString,
         net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream},
-        os::windows::process::CommandExt,
-        path::Path,
+        os::windows::{ffi::OsStringExt, process::CommandExt},
+        path::{Path, PathBuf},
         process::Command,
         thread::sleep,
         time::{Duration, Instant},
     };
 
     use windows_sys::Win32::{
-        Foundation::{CloseHandle, WAIT_TIMEOUT},
-        System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject},
+        Foundation::{CloseHandle, HANDLE, WAIT_TIMEOUT},
+        System::Threading::{
+            OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+            QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject,
+        },
         UI::WindowsAndMessaging::{IDYES, MB_ICONWARNING, MB_SETFOREGROUND, MB_YESNO, MessageBoxW},
     };
 
@@ -229,7 +233,7 @@ mod imp {
     }
 
     pub fn apply(msi: &Path, pid: u32, exe: &Path, sha256: &str) {
-        wait_for_exit(pid);
+        wait_for_exit(pid, exe);
         // The single-instance lock (the bridge port) is the last thing RDM lets go.
         wait_until(Duration::from_secs(15), || TcpListener::bind((Ipv4Addr::LOCALHOST, BRIDGE_PORT)).is_ok());
 
@@ -271,20 +275,37 @@ mod imp {
         }
     }
 
-    /// Waits for RDM (`pid`) to exit; ends it if it does not within `CLOSE_GRACE`.
-    fn wait_for_exit(pid: u32) {
+    /// Waits for RDM (`pid`, running `exe`) to exit; ends it if it does not within `CLOSE_GRACE`.
+    /// A process of that number running anything else is left alone: RDM is gone already, and
+    /// Windows gave its number to another program.
+    fn wait_for_exit(pid: u32, exe: &Path) {
         // SAFETY: plain Win32 calls on a handle we own and close.
         unsafe {
-            let process = OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, pid);
+            let access = PROCESS_SYNCHRONIZE | PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION;
+            let process = OpenProcess(access, 0, pid);
             if process.is_null() {
                 return; // already gone
             }
-            if WaitForSingleObject(process, CLOSE_GRACE.as_millis() as u32) == WAIT_TIMEOUT {
+            let still_rdm = image_of(process).is_some_and(|image| crate::update::same_file(&image, exe));
+            if still_rdm && WaitForSingleObject(process, CLOSE_GRACE.as_millis() as u32) == WAIT_TIMEOUT {
                 TerminateProcess(process, 1);
                 WaitForSingleObject(process, 10_000);
             }
             CloseHandle(process);
         }
+    }
+
+    /// The executable `process` runs.
+    ///
+    /// # Safety
+    /// `process` is a valid handle opened with `PROCESS_QUERY_LIMITED_INFORMATION`.
+    unsafe fn image_of(process: HANDLE) -> Option<PathBuf> {
+        let mut buffer = vec![0u16; 32_768];
+        let mut len = u32::try_from(buffer.len()).ok()?;
+        // SAFETY: `buffer` holds `len` UTF-16 units; on success `len` is the length written.
+        let ok = unsafe { QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, buffer.as_mut_ptr(), &mut len) };
+        let written = buffer.get(..usize::try_from(len).ok()?)?;
+        (ok != 0).then(|| PathBuf::from(OsString::from_wide(written)))
     }
 
     /// `msiexec` with `args`, waited for; retried while another installation is running. `None`

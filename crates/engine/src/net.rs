@@ -24,10 +24,10 @@ const DNS_MAX_ENTRIES: usize = 512;
 type Entry = (Instant, Arc<[SocketAddr]>);
 
 /// A DNS cache shared by every client of the engine. The system resolver answers; failures are not
-/// cached (the next connection asks again).
-#[derive(Default)]
+/// cached (the next connection asks again). Clones share the same entries.
+#[derive(Default, Clone)]
 pub(crate) struct CachedDns {
-    entries: Mutex<HashMap<String, Entry>>,
+    entries: Arc<Mutex<HashMap<String, Entry>>>,
 }
 
 /// The cached addresses, handed out without copying them.
@@ -79,7 +79,7 @@ impl Resolve for CachedDns {
         if let Some(addrs) = self.fresh(&host) {
             return Box::pin(std::future::ready(Ok(Box::new(Shared { addrs, next: 0 }) as Addrs)));
         }
-        let cache = Self::shared();
+        let cache = self.clone();
         Box::pin(async move {
             let addrs: Arc<[SocketAddr]> = tokio::net::lookup_host((host.as_str(), 0)).await?.collect();
             if addrs.is_empty() {
@@ -336,6 +336,17 @@ mod tests {
         assert_eq!(first, again, "case-insensitive");
         forget(&u("http://LocalHost:8080/x"));
         assert!(dns.fresh("localhost").is_none(), "forgotten after a failed connection");
+    }
+
+    #[tokio::test]
+    async fn a_cache_of_its_own_keeps_its_answers_to_itself() {
+        let own = CachedDns::default();
+
+        let answered = own.resolve("localhost".parse().unwrap()).await.is_ok();
+
+        assert!(answered);
+        assert!(own.fresh("localhost").is_some(), "kept in this cache");
+        assert!(own.clone().fresh("localhost").is_some(), "and in its clones");
     }
 
     #[test]

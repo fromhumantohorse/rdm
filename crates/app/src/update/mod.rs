@@ -180,8 +180,14 @@ pub fn installs_itself(release: &Release) -> bool {
 #[cfg(windows)]
 fn detect() -> Method {
     let (Some(installed), Some(me)) = (installed_exe(), startup_exe()) else { return Method::Manual };
+    if same_file(&installed, me) { Method::Msi } else { Method::Manual }
+}
+
+/// Whether two paths name the same existing file, whatever their case or form (Windows).
+#[cfg(windows)]
+fn same_file(a: &Path, b: &Path) -> bool {
     let norm = |p: &Path| std::fs::canonicalize(p).map(|p| p.to_string_lossy().to_lowercase());
-    if matches!((norm(&installed), norm(me)), (Ok(a), Ok(b)) if a == b) { Method::Msi } else { Method::Manual }
+    matches!((norm(a), norm(b)), (Ok(a), Ok(b)) if a == b)
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]

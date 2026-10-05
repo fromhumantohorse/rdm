@@ -450,7 +450,8 @@ ext.webRequest.onHeadersReceived.addListener(
     if (!hls && !isMediaType(type) && !isMediaUrl(url)) return;
     if (isYouTubeStream(url)) return;
     const range = header(responseHeaders, "content-range");
-    const size = hls ? 0 : Number(range?.split("/")[1] ?? header(responseHeaders, "content-length") ?? 0);
+    const announced = Number(range?.split("/")[1] ?? header(responseHeaders, "content-length") ?? 0);
+    const size = hls || !Number.isFinite(announced) ? 0 : announced;
     if (size && size < MIN_MEDIA_BYTES) return;
 
     const key = url.replace(/([?&])(range|rn|rbuf|bytestart|byteend)=[^&]*/g, "$1");

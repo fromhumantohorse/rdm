@@ -6,8 +6,7 @@ use std::{
 
 fn main() {
     embed_extension();
-    #[cfg(windows)]
-    {
+    if std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "windows") {
         println!("cargo:rerun-if-changed=assets/rdm.ico");
         let mut res = winresource::WindowsResource::new();
         res.set_icon("assets/rdm.ico").set("ProductName", "RDM").set("FileDescription", "Rust Download Manager");

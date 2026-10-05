@@ -3,10 +3,12 @@
 //! only the user can read (0600, like `~/.netrc`). Never shown in the list, never sent anywhere but
 //! to their site.
 
+use std::{io, path::Path};
+
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::settings::Settings;
+use crate::settings::{self, Settings};
 
 const FILE: &str = "secrets.bin";
 
@@ -30,34 +32,46 @@ pub struct SiteLogin {
 
 impl Secrets {
     pub fn load() -> Self {
-        std::fs::read(crate::settings::config_file(FILE))
-            .ok()
-            .and_then(|sealed| imp::open(&sealed))
-            .and_then(|plain| serde_json::from_slice(&plain).ok())
-            .unwrap_or_default()
+        Self::load_from(&settings::config_file(FILE))
     }
 
-    /// `false` when they could not be written.
-    pub fn save(&self) -> bool {
-        let Ok(plain) = serde_json::to_vec(self) else { return false };
-        let Some(sealed) = imp::seal(&plain) else { return false };
-        let path = crate::settings::config_file(FILE);
-        if let Some(dir) = path.parent() {
-            let _ = crate::settings::create_private_dir(dir);
+    /// A file that cannot be opened (damaged, or sealed for another Windows account) is kept aside
+    /// (`secrets.bin.bad`): the next save must not erase the passwords it may still hold.
+    fn load_from(path: &Path) -> Self {
+        let Some(sealed) = settings::read_config(path) else { return Self::default() };
+        match imp::open(&sealed).and_then(|plain| serde_json::from_slice(&plain).ok()) {
+            Some(secrets) => secrets,
+            None => {
+                settings::keep_aside(path);
+                Self::default()
+            }
         }
-        let tmp = crate::settings::with_suffix(&path, ".tmp");
-        crate::settings::write_private(&tmp, &sealed).and_then(|()| std::fs::rename(tmp, path)).is_ok()
+    }
+
+    pub fn save(&self) -> io::Result<()> {
+        self.save_to(&settings::config_file(FILE))
+    }
+
+    fn save_to(&self, path: &Path) -> io::Result<()> {
+        let plain = serde_json::to_vec(self)?;
+        let refused = || io::Error::other(crate::tr!("le système a refusé de chiffrer les mots de passe", "the system refused to encrypt the passwords"));
+        let sealed = imp::seal(&plain).ok_or_else(refused)?;
+        if let Some(dir) = path.parent() {
+            settings::create_private_dir(dir)?;
+        }
+        let tmp = settings::with_suffix(path, ".tmp");
+        settings::write_private(&tmp, &sealed).and_then(|()| std::fs::rename(tmp, path))
     }
 
     /// RDM 0.3.7 and older kept the VirusTotal key in the settings, in clear: it moves here once
     /// stored (`store`), and only then leaves the settings. `true` when the settings changed.
-    pub fn adopt_virustotal_key(&mut self, settings: &mut Settings, store: impl FnOnce(&Self) -> bool) -> bool {
+    pub fn adopt_virustotal_key(&mut self, settings: &mut Settings, store: impl FnOnce(&Self) -> io::Result<()>) -> bool {
         if settings.virustotal_key.is_empty() {
             return false;
         }
         if self.virustotal_key.is_empty() {
             self.virustotal_key = settings.virustotal_key.clone();
-            if !store(self) {
+            if store(self).is_err() {
                 return false; // kept in the settings meanwhile: not lost
             }
         }
@@ -180,16 +194,47 @@ mod tests {
         let key = "a".repeat(64);
         let with_key = || Settings { virustotal_key: key.clone(), ..Settings::default() };
         let (mut settings, mut secrets) = (with_key(), Secrets::default());
-        assert!(!secrets.adopt_virustotal_key(&mut settings, |_| false), "not stored: stays where it was");
+        assert!(!secrets.adopt_virustotal_key(&mut settings, |_| Err(io::ErrorKind::PermissionDenied.into())), "not stored: stays where it was");
         assert_eq!(settings.virustotal_key, key);
         let mut settings = with_key();
-        assert!(Secrets::default().adopt_virustotal_key(&mut settings, |s| s.virustotal_key == key));
+        assert!(Secrets::default().adopt_virustotal_key(&mut settings, |s| {
+            assert_eq!(s.virustotal_key, key);
+            Ok(())
+        }));
         assert!(settings.virustotal_key.is_empty());
         assert!(!serde_json::to_string(&settings).unwrap().contains("virustotal_key"), "no longer written in clear");
         // Already moved (an older RDM ran again meanwhile): the settings' copy just goes.
         let (mut settings, mut secrets) = (with_key(), Secrets { virustotal_key: "b".repeat(64), ..Secrets::default() });
         assert!(secrets.adopt_virustotal_key(&mut settings, |_| panic!("nothing to store")));
         assert_eq!(secrets.virustotal_key, "b".repeat(64));
+    }
+
+    /// Regression: a file RDM could not open was taken for "no passwords", and the next save
+    /// erased whatever it held.
+    #[test]
+    fn an_unreadable_file_is_kept_aside_not_erased() {
+        let dir = std::env::temp_dir().join(format!("rdm-secrets-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(FILE);
+        std::fs::write(&path, b"\x00 sealed for another account").unwrap();
+
+        let loaded = Secrets::load_from(&path);
+
+        assert_eq!(loaded, Secrets::default());
+        assert_eq!(std::fs::read(settings::with_suffix(&path, ".bad")).unwrap(), b"\x00 sealed for another account");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saved_passwords_load_back() {
+        let dir = std::env::temp_dir().join(format!("rdm-secrets-round-{}", std::process::id()));
+        let path = dir.join(FILE);
+        let secrets = Secrets { proxy_password: "s3cret".into(), virustotal_key: "k".repeat(64), ..Secrets::default() };
+
+        secrets.save_to(&path).unwrap();
+
+        assert_eq!(Secrets::load_from(&path), secrets);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

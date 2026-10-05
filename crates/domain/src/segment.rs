@@ -28,7 +28,7 @@ pub fn plan_segments(size: u64, n: u8, min_len: u64) -> Vec<Segment> {
     (0..n)
         .map(|i| i * chunk)
         .take_while(|&s| s < size)
-        .map(|s| Segment::new(s, (s + chunk).min(size) - 1))
+        .map(|s| Segment::new(s, s.saturating_add(chunk).min(size) - 1))
         .collect()
 }
 
@@ -47,5 +47,15 @@ mod tests {
     #[test]
     fn respects_min_len() {
         assert_eq!(plan_segments(1000, 32, 500).len(), 2);
+    }
+
+    /// A size the server made up (the largest a header can say) is split like any other.
+    #[test]
+    fn plans_the_largest_size_without_overflowing() {
+        let segs = plan_segments(u64::MAX, 64, 1);
+
+        assert_eq!(segs.len(), 64);
+        assert_eq!(segs.last().unwrap().end, u64::MAX - 1);
+        assert!(segs.windows(2).all(|w| w[0].end + 1 == w[1].start));
     }
 }

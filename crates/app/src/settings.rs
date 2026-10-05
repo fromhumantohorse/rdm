@@ -1,11 +1,12 @@
 use std::{
     collections::BTreeMap,
-    fs,
-    path::PathBuf,
+    fs, io,
+    path::{Path, PathBuf},
     sync::{Mutex, PoisonError},
+    time::Duration,
 };
 
-use directories::{ProjectDirs, UserDirs};
+use directories::{BaseDirs, ProjectDirs, UserDirs};
 use domain::Category;
 use serde::{Deserialize, Serialize};
 
@@ -13,6 +14,9 @@ use crate::i18n::Language;
 
 pub const BRIDGE_PORT: u16 = 9614;
 const FILE: &str = "settings.json";
+/// A file another program holds a moment (an antivirus scanning it at start) is read again.
+const READ_ATTEMPTS: u32 = 4;
+const READ_RETRY: Duration = Duration::from_millis(150);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Theme {
@@ -126,13 +130,18 @@ pub struct Settings {
     pub proxy: Proxy,
 }
 
+/// The system's download folder; the home folder when there is none.
+fn default_download_dir() -> PathBuf {
+    UserDirs::new()
+        .and_then(|u| u.download_dir().map(PathBuf::from))
+        .or_else(|| BaseDirs::new().map(|b| b.home_dir().to_path_buf()))
+        .unwrap_or_else(std::env::temp_dir)
+}
+
 impl Default for Settings {
     fn default() -> Self {
-        let download_dir = UserDirs::new()
-            .and_then(|u| u.download_dir().map(PathBuf::from))
-            .unwrap_or_else(|| PathBuf::from("."));
         Self {
-            download_dir,
+            download_dir: default_download_dir(),
             categorize: true,
             category_dirs: BTreeMap::new(),
             captured: domain::default_captured(),
@@ -181,6 +190,10 @@ impl Settings {
 
     /// Values read from a file (or typed) brought back within their bounds.
     pub fn sanitize(&mut self) {
+        if !self.download_dir.is_absolute() {
+            self.download_dir = default_download_dir();
+        }
+        self.category_dirs.retain(|_, dir| dir.is_absolute());
         self.connections = self.connections.clamp(1, domain::MAX_CONNECTIONS);
         self.max_parallel = self.max_parallel.clamp(1, MAX_PARALLEL);
         if self.captured.trim().is_empty() {
@@ -197,8 +210,8 @@ impl Settings {
         }
     }
 
-    pub fn save(&self) {
-        save_json(FILE, self);
+    pub fn save(&self) -> io::Result<()> {
+        save_json(FILE, self)
     }
 
     /// Folder a file of this category goes to.
@@ -237,33 +250,62 @@ pub fn load_json<T: serde::de::DeserializeOwned + Default>(name: &str) -> T {
     load_json_at(&config_file(name))
 }
 
-fn load_json_at<T: serde::de::DeserializeOwned + Default>(path: &std::path::Path) -> T {
-    let Ok(bytes) = fs::read(path) else { return T::default() };
+fn load_json_at<T: serde::de::DeserializeOwned + Default>(path: &Path) -> T {
+    let Some(bytes) = read_config(path) else { return T::default() };
     serde_json::from_slice(&bytes).unwrap_or_else(|_| {
-        let _ = fs::copy(path, with_suffix(path, ".bad"));
+        keep_aside(path);
         T::default()
     })
 }
 
+/// A file of the settings folder; `None` when there is none. One another program holds a moment
+/// is read again; one that stays unreadable is kept aside, like a damaged one.
+pub fn read_config(path: &Path) -> Option<Vec<u8>> {
+    let mut attempt = 1;
+    loop {
+        match fs::read(path) {
+            Ok(bytes) => return Some(bytes),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return None,
+            Err(_) if attempt < READ_ATTEMPTS => {
+                attempt += 1;
+                std::thread::sleep(READ_RETRY);
+            }
+            Err(_) => {
+                keep_aside(path);
+                return None;
+            }
+        }
+    }
+}
+
+/// A copy of a file this RDM cannot use, `<name>.bad`, for the user: the next save replaces the
+/// file itself. Best effort: a file that cannot be read cannot always be copied either.
+pub fn keep_aside(path: &Path) {
+    let _ = fs::copy(path, with_suffix(path, ".bad"));
+}
+
 /// Atomic write (temp file + rename), serialized: concurrent saves from the UI and download
 /// threads can neither interleave in the temp file nor leave a truncated config after a crash.
-pub fn save_json(name: &str, value: &impl Serialize) {
+pub fn save_json(name: &str, value: &impl Serialize) -> io::Result<()> {
     static WRITE: Mutex<()> = Mutex::new(());
-    let Ok(bytes) = serde_json::to_vec(value) else { return };
+    let bytes = serde_json::to_vec(value)?;
     let path = config_file(name);
     let _guard = WRITE.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some(dir) = path.parent() {
-        let _ = create_private_dir(dir);
+        create_private_dir(dir)?;
     }
     let tmp = path.with_extension("json.tmp");
     // Synced before the rename: a power cut right after must not leave an empty list behind.
-    let written = fs::File::create(&tmp).and_then(|mut f| {
-        std::io::Write::write_all(&mut f, &bytes)?;
-        f.sync_all()
-    });
-    if written.is_ok() {
-        let _ = fs::rename(tmp, path);
+    let written = fs::File::create(&tmp)
+        .and_then(|mut f| {
+            io::Write::write_all(&mut f, &bytes)?;
+            f.sync_all()
+        })
+        .and_then(|()| fs::rename(&tmp, &path));
+    if written.is_err() {
+        let _ = fs::remove_file(&tmp);
     }
+    written
 }
 
 /// RDM's settings folder, private to the user on Linux (0700, like `~/.ssh`): the download list

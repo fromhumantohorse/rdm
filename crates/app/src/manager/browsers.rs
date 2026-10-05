@@ -27,25 +27,26 @@ const MAX_BROWSERS: usize = 32;
 impl FirefoxPairing {
     /// `firefox.json`: a list of origins (RDM 0.2 wrote a single one).
     pub(super) fn load() -> VecDeque<String> {
-        let bytes = std::fs::read(crate::settings::config_file(FIREFOX_FILE)).unwrap_or_default();
+        let bytes = crate::settings::read_config(&crate::settings::config_file(FIREFOX_FILE)).unwrap_or_default();
         let origins = serde_json::from_slice::<VecDeque<String>>(&bytes)
             .or_else(|_| serde_json::from_slice::<String>(&bytes).map(|o| VecDeque::from([o])))
             .unwrap_or_default();
         origins.into_iter().filter(|o| is_firefox_origin(o)).take(MAX_PAIRED).collect()
     }
 
-    fn pair(&mut self, origin: String) {
+    fn pair(&mut self, origin: String) -> std::io::Result<()> {
         self.refused.remove(&origin);
         if self.pending.as_ref() == Some(&origin) {
             self.pending = None;
         }
-        if !self.paired.contains(&origin) {
-            self.paired.push_back(origin);
-            while self.paired.len() > MAX_PAIRED {
-                self.paired.pop_front();
-            }
-            save_json(FIREFOX_FILE, &self.paired);
+        if self.paired.contains(&origin) {
+            return Ok(());
         }
+        self.paired.push_back(origin);
+        while self.paired.len() > MAX_PAIRED {
+            self.paired.pop_front();
+        }
+        save_json(FIREFOX_FILE, &self.paired)
     }
 }
 
@@ -91,7 +92,11 @@ impl Manager {
         let mut ff = lock(&self.firefox);
         let Some(origin) = ff.pending.take() else { return };
         match allow {
-            Some(true) => ff.pair(origin),
+            Some(true) => {
+                let saved = ff.pair(origin);
+                drop(ff);
+                self.saved(saved);
+            }
             Some(false) => {
                 ff.refused.insert(origin);
             }
@@ -105,7 +110,8 @@ impl Manager {
         if !is_firefox_origin(origin) {
             return false;
         }
-        lock(&self.firefox).pair(origin.to_owned());
+        let saved = lock(&self.firefox).pair(origin.to_owned());
+        self.saved(saved);
         self.repaint();
         true
     }
@@ -132,7 +138,7 @@ impl Manager {
         if before.is_none_or(|t| now.saturating_sub(t) > 600) {
             let copy = seen.clone();
             drop(seen);
-            save_json(BROWSERS_FILE, &copy);
+            self.saved(save_json(BROWSERS_FILE, &copy));
             self.repaint();
         }
     }
@@ -151,13 +157,13 @@ impl Manager {
             seen.remove(&key);
             seen.clone()
         };
-        save_json(BROWSERS_FILE, &seen);
+        self.saved(save_json(BROWSERS_FILE, &seen));
         let pending = {
             let mut pending = lock(&self.uninstalls);
             pending.insert(key, unix_now());
             pending.clone()
         };
-        save_json(UNINSTALLS_FILE, &pending);
+        self.saved(save_json(UNINSTALLS_FILE, &pending));
         lock(&self.installs).remove(&browser);
         self.repaint();
     }
@@ -176,7 +182,7 @@ impl Manager {
             }
             pending.clone()
         };
-        save_json(UNINSTALLS_FILE, &pending);
+        self.saved(save_json(UNINSTALLS_FILE, &pending));
     }
 
     /// The extension of the browser named `key` got the request and uninstalls itself now.
@@ -213,7 +219,7 @@ impl Manager {
             }
             list.clone()
         };
-        save_json(CUSTOM_BROWSERS_FILE, &list);
+        self.saved(save_json(CUSTOM_BROWSERS_FILE, &list));
         Some(browser)
     }
 

@@ -49,11 +49,11 @@ pub struct Report {
 impl Report {
     /// Engines that gave a verdict.
     pub fn engines(&self) -> u32 {
-        self.malicious + self.suspicious + self.harmless + self.undetected
+        self.flagged().saturating_add(self.harmless).saturating_add(self.undetected)
     }
 
     pub fn flagged(&self) -> u32 {
-        self.malicious + self.suspicious
+        self.malicious.saturating_add(self.suspicious)
     }
 
     pub fn link(&self) -> String {
@@ -278,7 +278,7 @@ fn report(stats: &Value, results: &Value, sha256: &str) -> Option<Report> {
         suspicious: n("suspicious"),
         harmless: n("harmless"),
         undetected: n("undetected"),
-        unavailable: n("type-unsupported") + n("timeout") + n("confirmed-timeout") + n("failure"),
+        unavailable: ["type-unsupported", "timeout", "confirmed-timeout", "failure"].into_iter().map(n).fold(0, u32::saturating_add),
         detections,
         sha256: sha256.to_owned(),
     })
@@ -338,6 +338,17 @@ mod tests {
         assert!(!redirect_keeps_key(&u("https://www.virustotal.com/x"), &u("http://www.virustotal.com/x")), "not in clear");
         let github = u("https://github.com/o/r/releases/download/v1/a.msi");
         assert!(redirect_keeps_key(&github, &u("https://release-assets.githubusercontent.com/a")), "GitHub's downloads still work");
+    }
+
+    /// Counts come from the network: absurd ones add up to the largest count, never wrap to a small one.
+    #[test]
+    fn absurd_counts_saturate() {
+        let huge = u64::from(u32::MAX) + 10;
+        let stats = serde_json::json!({ "malicious": huge, "suspicious": 5, "harmless": 1, "timeout": huge, "failure": 3 });
+
+        let r = report(&stats, &Value::Null, SHA).unwrap();
+
+        assert_eq!((r.malicious, r.flagged(), r.engines(), r.unavailable), (u32::MAX, u32::MAX, u32::MAX, u32::MAX));
     }
 
     #[test]
