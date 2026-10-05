@@ -13,6 +13,8 @@
 //!
 //! Framing (both ways): a 32-bit length in native byte order, then that much UTF-8 JSON.
 
+mod register;
+
 use std::{
     io::{self, BufReader, Read, Write},
     net::{Ipv4Addr, SocketAddr, TcpStream},
@@ -25,6 +27,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::settings::BRIDGE_PORT;
+pub use register::register;
 
 /// The connector's name, as the extension asks for it (`runtime.connectNative`).
 pub const HOST: &str = "rdm.bridge";
@@ -286,7 +289,7 @@ fn start_rdm(path: &str) -> bool {
     // A link sent from the page: RDM starts in the notification area and takes it from there;
     // the toolbar button asks for the window.
     let minimized = path != "/show";
-    if imp::spawn_detached(&exe, minimized).is_err() {
+    if spawn_detached(&exe, minimized).is_err() {
         return false;
     }
     let start = Instant::now();
@@ -299,216 +302,61 @@ fn start_rdm(path: &str) -> bool {
     false
 }
 
-// ── Registration with the browsers ─────────────────────────────────────────
-
-/// The host manifest: Chromium-based browsers list allowed origins, Firefox allowed extension IDs.
-fn manifest(exe: &Path, firefox: bool) -> Vec<u8> {
-    let mut m = serde_json::json!({
-        "name": HOST,
-        "description": "RDM — Rust Download Manager",
-        "path": exe,
-        "type": "stdio",
-    });
-    if firefox {
-        m["allowed_extensions"] = serde_json::json!([FIREFOX_ID]);
-    } else {
-        m["allowed_origins"] = serde_json::json!([CHROME_ORIGIN]);
-    }
-    serde_json::to_vec_pretty(&m).unwrap_or_default()
-}
-
-/// Writes `bytes` to `path` unless it already holds them.
-fn write_if_changed(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    if std::fs::read(path).is_ok_and(|old| old == bytes) {
-        return Ok(());
-    }
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let tmp = crate::settings::with_suffix(path, ".tmp");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(tmp, path)
-}
-
-/// At start (in the background): registers the connector with the browsers, pointing at the
-/// installed RDM (or this copy when there is none). Cheap when nothing changed (compared first).
-pub fn register() {
-    let installed = crate::update::installed_exe().filter(|p| p.is_file());
-    let Some(exe) = installed.or_else(|| std::env::current_exe().ok()) else { return };
-    let _ = imp::register(&exe);
-}
-
+/// Outside the browser's job (Firefox ends its connectors' jobs with it), without the connector's
+/// pipes (RDM would keep them open, and the browser would never see the connector end).
 #[cfg(windows)]
-mod imp {
-    use std::{io, os::windows::process::CommandExt, path::Path, process::Command};
+fn spawn_detached(exe: &Path, minimized: bool) -> io::Result<()> {
+    use std::os::windows::process::CommandExt;
 
-    use winreg::{RegKey, enums::HKEY_CURRENT_USER};
-
-    use super::{HOST, manifest, write_if_changed};
-
-    /// Where each browser family looks for hosts (per user), and whether to register there even
-    /// before the browser's own key exists: Chrome's and Mozilla's are read by most derivatives
-    /// (Opera, Waterfox…); the others only when that browser is used.
-    const CHROMIUM_KEYS: [(&str, bool); 5] = [
-        (r"Software\Google\Chrome", true),
-        (r"Software\Chromium", false),
-        (r"Software\Microsoft\Edge", false),
-        (r"Software\BraveSoftware\Brave-Browser", false),
-        (r"Software\Vivaldi", false),
-    ];
-    const FIREFOX_KEYS: [(&str, bool); 3] = [(r"Software\Mozilla", true), (r"Software\Waterfox", false), (r"Software\LibreWolf", false)];
-
-    pub fn register(exe: &Path) -> io::Result<()> {
-        let dir = crate::settings::config_file("native");
-        let chrome = dir.join(format!("{HOST}.chromium.json"));
-        let firefox = dir.join(format!("{HOST}.json"));
-        write_if_changed(&chrome, &manifest(exe, false))?;
-        write_if_changed(&firefox, &manifest(exe, true))?;
-        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        for (keys, file) in [(&CHROMIUM_KEYS[..], &chrome), (&FIREFOX_KEYS[..], &firefox)] {
-            let value = file.to_string_lossy().into_owned();
-            for (browser, always) in keys {
-                if !always && hkcu.open_subkey(browser).is_err() {
-                    continue;
-                }
-                let path = format!(r"{browser}\NativeMessagingHosts\{HOST}");
-                let current: Option<String> = hkcu.open_subkey(&path).and_then(|k| k.get_value("")).ok();
-                if current.as_deref() != Some(&value) {
-                    let (k, _) = hkcu.create_subkey(&path)?;
-                    k.set_value("", &value)?;
-                }
+    use windows_sys::Win32::{
+        Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation},
+        System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE},
+    };
+    // SAFETY: plain Win32 calls on this process's own standard handles.
+    unsafe {
+        for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+            let handle = GetStdHandle(which);
+            if !handle.is_null() {
+                SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0);
             }
         }
-        Ok(())
     }
-
-    /// Outside the browser's job (Firefox ends its connectors' jobs with it), without the
-    /// connector's pipes (RDM would keep them open, and the browser would never see the connector
-    /// end).
-    pub fn spawn_detached(exe: &Path, minimized: bool) -> io::Result<()> {
-        use windows_sys::Win32::{
-            Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation},
-            System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE},
-        };
-        // SAFETY: plain Win32 calls on this process's own standard handles.
-        unsafe {
-            for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
-                let handle = GetStdHandle(which);
-                if !handle.is_null() {
-                    SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0);
-                }
-            }
-        }
-        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
-        let mut command = Command::new(exe);
-        if minimized {
-            command.arg(crate::autostart::MINIMIZED_FLAG);
-        }
-        command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-        match command.creation_flags(CREATE_BREAKAWAY_FROM_JOB).spawn() {
-            Ok(_) => Ok(()),
-            Err(_) => command.creation_flags(0).spawn().map(drop),
-        }
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+    let mut command = std::process::Command::new(exe);
+    if minimized {
+        command.arg(crate::autostart::MINIMIZED_FLAG);
+    }
+    command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    match command.creation_flags(CREATE_BREAKAWAY_FROM_JOB).spawn() {
+        Ok(_) => Ok(()),
+        Err(_) => command.creation_flags(0).spawn().map(drop),
     }
 }
 
+/// In its own session: closing the browser (which ends the connector's process group) must not
+/// take RDM with it.
 #[cfg(not(windows))]
-mod imp {
-    use std::{
-        io,
-        os::unix::process::CommandExt,
-        path::{Path, PathBuf},
-        process::Command,
-    };
+fn spawn_detached(exe: &Path, minimized: bool) -> io::Result<()> {
+    use std::os::unix::process::CommandExt;
 
-    use super::{HOST, manifest, write_if_changed};
-
-    /// Each browser's per-user host folder, under the folder that shows the browser is used.
-    const CHROMIUM_DIRS: [(&str, &str); 7] = [
-        (".config/google-chrome", "NativeMessagingHosts"),
-        (".config/chromium", "NativeMessagingHosts"),
-        (".config/BraveSoftware/Brave-Browser", "NativeMessagingHosts"),
-        (".config/microsoft-edge", "NativeMessagingHosts"),
-        (".config/vivaldi", "NativeMessagingHosts"),
-        (".config/opera", "NativeMessagingHosts"),
-        (".config/google-chrome-beta", "NativeMessagingHosts"),
-    ];
-    const FIREFOX_DIRS: [(&str, &str); 3] =
-        [(".mozilla", "native-messaging-hosts"), (".waterfox", "native-messaging-hosts"), (".librewolf", "native-messaging-hosts")];
-
-    pub fn register(exe: &Path) -> io::Result<()> {
-        let Some(home) = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf()) else { return Ok(()) };
-        let mut hosts: Vec<(PathBuf, bool)> = Vec::new();
-        for (dirs, firefox) in [(&CHROMIUM_DIRS[..], false), (&FIREFOX_DIRS[..], true)] {
-            for (browser, dir) in dirs {
-                let browser = home.join(browser);
-                if browser.is_dir() {
-                    hosts.push((browser.join(dir), firefox));
-                }
-            }
-        }
-        // Any other browser of either family, found by its profile folder (as IDM finds any
-        // browser): no list to keep up to date.
-        for (dir, firefox) in discovered(&home) {
-            if !hosts.iter().any(|(h, _)| *h == dir) {
-                hosts.push((dir, firefox));
-            }
-        }
-        let (chromium, firefox) = (manifest(exe, false), manifest(exe, true));
-        for (dir, is_firefox) in hosts {
-            let _ = write_if_changed(&dir.join(format!("{HOST}.json")), if is_firefox { &firefox } else { &chromium });
-        }
-        Ok(())
+    let mut command = std::process::Command::new(exe);
+    if minimized {
+        command.arg(crate::autostart::MINIMIZED_FLAG);
     }
-
-    /// Where the browsers of the home folder look for connectors: a Chromium-based browser keeps
-    /// its profiles in `~/.config/<name>` (or one level deeper, `BraveSoftware/Brave-Browser`)
-    /// with a `Local State` file, and reads `NativeMessagingHosts` there; a Firefox-based one
-    /// keeps a `profiles.ini` in `~/.<name>` (or one level deeper, `.mozilla/firefox`) and reads
-    /// `~/.<name>/native-messaging-hosts`.
-    fn discovered(home: &Path) -> Vec<(PathBuf, bool)> {
-        let subdirs = |dir: &Path| -> Vec<PathBuf> {
-            std::fs::read_dir(dir).map(|e| e.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect()).unwrap_or_default()
-        };
-        let mut found = Vec::new();
-        for dir in subdirs(&home.join(".config")) {
-            for profile in std::iter::once(dir.clone()).chain(subdirs(&dir)) {
-                // Electron applications (VS Code, Discord…) keep a `Local State` too, not a `Default` profile.
-                if profile.join("Local State").is_file() && profile.join("Default").is_dir() {
-                    found.push((profile.join("NativeMessagingHosts"), false));
-                }
-            }
-        }
-        for dir in subdirs(home).into_iter().filter(|d| d.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.'))) {
-            if std::iter::once(dir.clone()).chain(subdirs(&dir)).any(|d| d.join("profiles.ini").is_file()) {
-                found.push((dir.join("native-messaging-hosts"), true));
-            }
-        }
-        found
-    }
-
-    /// In its own session: closing the browser (which ends the connector's process group) must
-    /// not take RDM with it.
-    pub fn spawn_detached(exe: &Path, minimized: bool) -> io::Result<()> {
-        let mut command = Command::new(exe);
-        if minimized {
-            command.arg(crate::autostart::MINIMIZED_FLAG);
-        }
-        command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-        // SAFETY: `setsid` is async-signal-safe and touches nothing of the parent.
-        unsafe {
-            command.pre_exec(|| {
-                libc::setsid();
-                Ok(())
-            });
-        }
-        let mut child = command.spawn()?;
-        // Reaped when it ends (the connector usually ends first; then init adopts it).
-        std::thread::spawn(move || {
-            let _ = child.wait();
+    command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    // SAFETY: `setsid` is async-signal-safe and touches nothing of the parent.
+    unsafe {
+        command.pre_exec(|| {
+            libc::setsid();
+            Ok(())
         });
-        Ok(())
     }
+    let mut child = command.spawn()?;
+    // Reaped when it ends (the connector usually ends first; then init adopts it).
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 #[cfg(test)]
@@ -561,16 +409,5 @@ mod tests {
         let chunked = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nrdm \r\n3\r\n0.3\r\n0\r\n\r\n";
         assert_eq!(parse_response(chunked), Some((200, b"rdm 0.3".to_vec())));
         assert_eq!(parse_response(b"garbage"), None);
-    }
-
-    #[test]
-    fn manifests_name_only_the_rdm_extension() {
-        let chrome: Value = serde_json::from_slice(&manifest(Path::new("/opt/rdm"), false)).unwrap();
-        assert_eq!(chrome["allowed_origins"][0], CHROME_ORIGIN);
-        assert!(chrome.get("allowed_extensions").is_none());
-        let firefox: Value = serde_json::from_slice(&manifest(Path::new("/opt/rdm"), true)).unwrap();
-        assert_eq!(firefox["allowed_extensions"][0], FIREFOX_ID);
-        assert_eq!(firefox["name"], HOST);
-        assert_eq!(CHROME_ORIGIN.trim_end_matches('/'), crate::bridge::EXTENSION_ORIGIN);
     }
 }

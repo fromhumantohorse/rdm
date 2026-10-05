@@ -2,6 +2,8 @@
 
 use super::*;
 
+const UPDATE_EVERY: Duration = Duration::from_secs(24 * 3600);
+
 impl Manager {
     /// Client for VirusTotal and GitHub (not the download engine's: see `virustotal::client`),
     /// through the proxy of the settings like downloads; rebuilt when that changes. Refused for an

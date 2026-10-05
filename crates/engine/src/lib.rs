@@ -354,6 +354,16 @@ mod tests {
     }
 
     #[test]
+    fn parses_content_range() {
+        let range = |v: &str| content_range(&HeaderMap::from_iter([(header::CONTENT_RANGE, v.parse().unwrap())]));
+        assert_eq!(range("bytes 1024-2047/4096"), Some((1024, Some(4096))));
+        assert_eq!(range("bytes 0-0/*"), Some((0, None)), "size unknown");
+        assert_eq!(range("bytes */4096"), None, "no range at all");
+        assert_eq!(range("items 0-1/2"), None);
+        assert_eq!(content_range(&HeaderMap::new()), None);
+    }
+
+    #[test]
     fn every_proxy_kind_builds_with_or_without_a_login() {
         for url in ["http://p:3128", "https://p:3128", "socks5://p:1080", "socks5h://p:1080", "socks4://p:1080", "SOCKS4A://p:1080"] {
             for user in ["", "me"] {

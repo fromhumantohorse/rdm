@@ -10,9 +10,14 @@ use egui_phosphor::regular as icon;
 use super::{
     ADD_ID, Action, App, Filter, NAV, SEARCH_ID, STATUS_FILTERS,
     theme::{self, Palette},
-    widgets::{self, ICON_BUTTON, accent_button, accent_button_width, caption, field, icon_button, speed},
+    widgets::{self, ICON_BUTTON, accent_button, accent_button_width, caption, field, icon_button},
 };
-use crate::{manager::Stats, settings::Theme, tr, trf, update};
+use crate::{
+    i18n::{duration, speed},
+    manager::Stats,
+    settings::Theme,
+    tr, trf, update,
+};
 
 const HEADER_GAP: f32 = 10.0;
 const SEARCH_WIDTH: f32 = 240.0;
@@ -259,7 +264,7 @@ impl App<'_> {
                 stat(ui, &p, icon::ARROW_CIRCLE_DOWN, &crate::i18n::count(stats.running as u64, ("actif", "actifs"), ("active", "active")), p.accent);
                 stat(ui, &p, icon::HOURGLASS, &trf!("{} en attente", "{} waiting", stats.queued), p.muted);
                 if let Some(eta) = (stats.speed > 1.0 && stats.total > stats.done).then(|| ((stats.total - stats.done) as f64 / stats.speed) as u64) {
-                    stat(ui, &p, icon::TIMER, &trf!("reste {}", "{} left", widgets::duration(eta)), p.muted);
+                    stat(ui, &p, icon::TIMER, &trf!("reste {}", "{} left", duration(eta)), p.muted);
                 }
             });
         });

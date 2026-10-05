@@ -13,36 +13,6 @@ use eframe::egui::{
 
 use super::theme::{self, Palette};
 
-// ── Numbers, in the interface language ───────────────────────────────────
-pub fn bytes(n: u64) -> String {
-    let units: [&str; 5] = if crate::i18n::french() { ["o", "Ko", "Mo", "Go", "To"] } else { ["B", "KB", "MB", "GB", "TB"] };
-    let mut v = n as f64;
-    let mut unit = 0;
-    while v >= 1024.0 && unit < units.len() - 1 {
-        v /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 { format!("{n} {}", units[0]) } else { format!("{} {}", decimal(v), units[unit]) }
-}
-
-pub fn speed(bytes_per_sec: f64) -> String {
-    format!("{}/s", bytes(bytes_per_sec.max(0.0) as u64))
-}
-
-/// One decimal: `1,5` in French and most languages, `1.5` in English and East Asian ones.
-fn decimal(v: f64) -> String {
-    let text = format!("{v:.1}");
-    if crate::i18n::decimal_comma() { text.replace('.', ",") } else { text }
-}
-
-pub fn duration(secs: u64) -> String {
-    match secs {
-        0..60 => format!("{secs} s"),
-        60..3600 => format!("{} min {:02} s", secs / 60, secs % 60),
-        _ => format!("{} h {:02} min", secs / 3600, secs % 3600 / 60),
-    }
-}
-
 // ── Painting helpers ─────────────────────────────────────────────────────
 /// A rounded rectangle filled with a gradient along `dir` (a unit vector): tessellated like any
 /// filled shape — anti-aliased rounded corners — then recoloured vertex by vertex.
@@ -487,23 +457,4 @@ pub fn spinner(painter: &Painter, center: Pos2, radius: f32, color: Color32, tim
         })
         .collect();
     painter.add(Shape::line(points, Stroke::new(2.0_f32, color)));
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn formats() {
-        let _one_at_a_time = crate::i18n::TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        crate::i18n::set(crate::i18n::Language::English);
-        assert_eq!(bytes(1536), "1.5 KB");
-        crate::i18n::set(crate::i18n::Language::French);
-        assert_eq!(bytes(512), "512 o");
-        assert_eq!(bytes(1536), "1,5 Ko");
-        assert_eq!(speed(3.5 * 1024.0 * 1024.0), "3,5 Mo/s");
-        assert_eq!(duration(59), "59 s");
-        assert_eq!(duration(125), "2 min 05 s");
-        assert_eq!(duration(7260), "2 h 01 min");
-    }
 }

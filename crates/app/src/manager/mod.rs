@@ -4,20 +4,27 @@ pub mod checksum;
 pub mod clipboard;
 mod add;
 mod browsers;
+mod control;
 mod entry;
 mod files;
 mod online;
+mod preferences;
 mod recording;
 mod routes;
+mod scheduler;
+mod ticker;
 
 pub use add::{AddRequest, ToConfirm, header_map};
+pub use browsers::{Install, Installed};
 pub use entry::{Entry, Retry, Scan, ScanRefused, Verify};
 pub use recording::Track;
 pub use routes::RouteError;
-use browsers::FirefoxPairing;
+pub use ticker::Stats;
+use browsers::{BROWSERS_FILE, CUSTOM_BROWSERS_FILE, FirefoxPairing, UNINSTALLS_FILE};
 use entry::{Launch, load_entries, to_header_map};
 use files::{leftovers, mark_from_internet, planned, remove_recording_leftovers, target_for, unique_path};
 use recording::Recording;
+use ticker::HISTORY;
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
@@ -47,51 +54,10 @@ use crate::{
     virustotal::{self, Report, Stage},
 };
 
-const UPDATE_EVERY: Duration = Duration::from_secs(24 * 3600);
-
 const STORE: &str = "downloads.json";
-/// Speeds, idle recordings and the list on disk are refreshed at this pace.
-const TICK: Duration = Duration::from_millis(500);
-/// … and at this one once nothing has moved for `IDLE_AFTER` ticks.
-const IDLE_TICK: Duration = Duration::from_secs(2);
-const IDLE_AFTER: u32 = 4;
-/// While transfers run, the list (with progress) is written every this many ticks (10 s).
-const PROGRESS_SAVE_TICKS: u32 = 20;
-/// Samples of the total speed kept for the chart: one minute.
-pub const HISTORY: usize = 120;
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
-/// A recording that receives nothing for this long is considered abandoned.
-const RECORDING_IDLE: Duration = Duration::from_secs(120);
-/// A new link shows in the list at once; asking its server for the real file name takes at most this.
-const NAME_TIMEOUT: Duration = Duration::from_secs(10);
-/// The same link sent again within this window is the same request (double click, page retrying).
-const DUPLICATE_WINDOW: Duration = Duration::from_secs(5);
-/// Browser downloads waiting for the user's go-ahead at most (the rest are dropped).
-const MAX_TO_CONFIRM: usize = 50;
-/// Transient failures (network down, server busy) are retried on their own this many times in a
-/// row without progress — about half an hour — before the download is reported as failed.
-const AUTO_RETRIES: u32 = 15;
-
-/// Automatic proxy mode: a download that runs below `SLOW_SPEED` (bytes/s) for `SLOW_FOR`, once
-/// past its first `SLOW_GRACE`, switches to the proxy.
-const SLOW_SPEED: f64 = 32.0 * 1024.0;
-const SLOW_FOR: Duration = Duration::from_secs(20);
-const SLOW_GRACE: Duration = Duration::from_secs(15);
-
-/// 5 s, 10 s, 20 s, 40 s, 80 s, then every 2 minutes.
-fn retry_delay(retries: u32) -> Duration {
-    Duration::from_secs((5u64 << retries.min(5)).min(120))
-}
-
-#[derive(Default, Clone, Copy)]
-pub struct Stats {
-    pub running: usize,
-    pub queued: usize,
-    pub speed: f64,
-    /// Bytes done / known total over running downloads (for the tray tooltip).
-    pub done: u64,
-    pub total: u64,
-}
+/// Messages kept for the window while it is closed.
+const MAX_NOTICES: usize = 20;
 
 type Callback = Box<dyn Fn() + Send + Sync>;
 
@@ -162,42 +128,11 @@ pub struct Manager {
     opened_to_install: Mutex<HashMap<String, Instant>>,
 }
 
-const BROWSERS_FILE: &str = "browsers.json";
-/// Extensions to remove (see `Manager::remove_extension`).
-const UNINSTALLS_FILE: &str = "uninstalls.json";
-const UNINSTALL_TTL_SECS: u64 = 24 * 3600;
-/// Browsers added by hand (see `Manager::add_browser`).
-const CUSTOM_BROWSERS_FILE: &str = "custom_browsers.json";
-/// How long after RDM opened a browser to install the extension its tab is still taken as RDM's.
-const INSTALL_TAB_TTL: Duration = Duration::from_secs(15 * 60);
-/// Messages kept for the window while it is closed.
-const MAX_NOTICES: usize = 20;
-
 /// A message for the window (a toast): the outcome of something done in the background.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Notice {
     pub warning: bool,
     pub text: String,
-}
-
-/// Installing the extension into one browser, as the extension window shows it.
-#[derive(Debug, Clone)]
-pub enum Install {
-    Working,
-    Done(Installed),
-    Failed(String),
-}
-
-#[derive(Debug, Clone)]
-pub struct Installed {
-    /// The unpacked extension (Chromium-based browsers: "load unpacked" from here).
-    pub folder: PathBuf,
-    /// The browser was opened on its extensions page (or on the package to confirm).
-    pub launched: bool,
-    /// Firefox: the signed package is installing for good (Firefox asks to confirm).
-    pub signed: bool,
-    /// Firefox: the unsigned package, for the editions that accept one.
-    pub xpi: Option<PathBuf>,
 }
 
 impl Manager {
@@ -283,26 +218,6 @@ impl Manager {
         std::mem::take(&mut *lock(&self.notices))
     }
 
-    /// The saved passwords (site logins, proxy), for the settings.
-    pub fn secrets(&self) -> Secrets {
-        lock(&self.secrets).clone()
-    }
-
-    /// Replaces the saved passwords; downloads started from now on use them.
-    pub fn set_secrets(&self, secrets: Secrets) {
-        let changed = {
-            let mut current = lock(&self.secrets);
-            let changed = *current != secrets;
-            *current = secrets;
-            changed
-        };
-        if changed {
-            let saved = lock(&self.secrets).save();
-            self.saved(saved);
-            self.forget_clients(); // the proxy password may have changed
-        }
-    }
-
     /// Quit to let the new version start (see `restart_after_exit`).
     pub fn restart_requested(&self) -> bool {
         self.restart_after_exit.load(Acquire)
@@ -338,150 +253,6 @@ impl Manager {
         f(&lock(&self.entries))
     }
 
-    pub fn settings(&self) -> Settings {
-        lock(&self.settings).clone()
-    }
-
-    /// One field without cloning the whole settings (read every frame).
-    pub fn with_settings<R>(&self, f: impl FnOnce(&Settings) -> R) -> R {
-        f(&lock(&self.settings))
-    }
-
-    /// Takes effect immediately; `save_settings` persists (the UI debounces it, shutdown flushes it).
-    pub fn apply_settings(self: &Arc<Self>, mut new: Settings) {
-        new.sanitize();
-        self.limit.set(u64::from(new.speed_limit_kib) * 1024);
-        crate::i18n::set(new.language);
-        let (proxy_changed, queues) = {
-            let mut current = lock(&self.settings);
-            let proxy_changed = current.proxy != new.proxy;
-            let queues: HashSet<u32> = new.queues.iter().map(|q| q.id).collect();
-            *current = new;
-            (proxy_changed, queues)
-        };
-        if proxy_changed {
-            self.forget_clients();
-        }
-        // Downloads of a deleted queue go back to the main one.
-        let mut moved = false;
-        for e in lock(&self.entries).iter_mut() {
-            if e.download.queue != 0 && !queues.contains(&e.download.queue) {
-                e.download.queue = 0;
-                moved = true;
-            }
-        }
-        if moved {
-            self.changed();
-        }
-        self.settings_dirty.store(true, Release);
-        self.schedule();
-    }
-
-    /// Writes the settings if they changed since the last save (tried again next time if it fails).
-    pub fn save_settings(&self) {
-        if self.settings_dirty.swap(false, AcqRel) {
-            let saved = lock(&self.settings).save(); // under the lock: saves land in the order of the changes
-            if saved.is_err() {
-                self.settings_dirty.store(true, Release);
-            }
-            self.saved(saved);
-        }
-    }
-
-    pub fn stats(&self) -> Stats {
-        lock(&self.entries).iter().fold(Stats::default(), |mut s, e| {
-            match e.download.status() {
-                Status::Running => {
-                    let (done, total, _) = e.progress.snapshot();
-                    s.running += 1;
-                    s.speed += e.speed;
-                    s.done += done.min(total);
-                    s.total += total;
-                }
-                Status::Queued => s.queued += 1,
-                _ => {}
-            }
-            s
-        })
-    }
-
-    /// ▶ on a paused / failed download (or one waiting to retry): back in the queue, now.
-    pub fn resume(self: &Arc<Self>, id: DownloadId) {
-        self.update(id, Entry::resume);
-        self.schedule();
-    }
-
-    pub fn pause(self: &Arc<Self>, id: DownloadId) {
-        self.update(id, Entry::pause);
-        self.schedule();
-    }
-
-    /// One pass under one lock (queued downloads are paused too: nothing starts afterwards).
-    pub fn pause_all(&self) {
-        lock(&self.entries).iter_mut().for_each(Entry::pause);
-        self.changed();
-    }
-
-    /// Paused and failed downloads go back in the queue, in their list order.
-    pub fn resume_all(self: &Arc<Self>) {
-        lock(&self.entries).iter_mut().for_each(Entry::resume);
-        self.changed();
-        self.schedule();
-    }
-
-    /// Removes from the list; `delete_file` also erases the file (always for unfinished parts).
-    pub fn remove(self: &Arc<Self>, id: DownloadId, delete_file: bool) {
-        if let Some(token) = self.token_of(id) {
-            self.cancel_recording(&token, Failure::RecordingCancelled);
-        }
-        let removed = {
-            let mut entries = lock(&self.entries);
-            entries.iter().position(|e| e.download.id == id).map(|i| entries.remove(i))
-        };
-        if let Some(e) = removed {
-            if let Some(cancel) = &e.cancel {
-                cancel.cancel();
-            }
-            if delete_file || *e.download.status() != Status::Completed {
-                let this = self.clone();
-                let (target, replaces) = (e.download.target.clone(), e.replaces);
-                self.rt.spawn(async move {
-                    // Wait for the task to stop writing (bounded), then clean up.
-                    let deadline = Instant::now() + Duration::from_secs(10);
-                    while lock(&this.busy).contains(&id) && Instant::now() < deadline {
-                        tokio::time::sleep(Duration::from_millis(50)).await;
-                    }
-                    for path in leftovers(&target, delete_file, replaces) {
-                        let _ = tokio::fs::remove_file(path).await;
-                    }
-                    remove_recording_leftovers(&target).await;
-                });
-            }
-        }
-        self.changed();
-        self.schedule();
-    }
-
-    pub fn clear_completed(&self) {
-        lock(&self.entries).retain(|e| *e.download.status() != Status::Completed);
-        self.changed();
-    }
-
-    /// SHA-256 of a finished file, computed off the UI thread, then shown by the UI.
-    pub fn compute_sha256(self: &Arc<Self>, id: DownloadId) {
-        let Some(path) = self.view(|es| {
-            es.iter().find(|e| e.download.id == id && *e.download.status() == Status::Completed).map(|e| e.download.target.clone())
-        }) else {
-            return;
-        };
-        let this = self.clone();
-        self.rt.spawn_blocking(move || {
-            if let Ok(hash) = checksum::digest(&path, checksum::Algo::Sha256) {
-                this.update(id, |e| e.sha256 = Some(hash));
-            }
-        });
-    }
-
     /// Stops every transfer, waits (bounded) for each to persist its resume state, then writes the
     /// list and the settings. Idempotent and callable from any thread: a second caller waits for
     /// the first to finish. Nothing new starts afterwards.
@@ -504,202 +275,6 @@ impl Manager {
         self.closing.load(SeqCst)
     }
 
-    /// Starts queued downloads (FIFO) while fewer than `max_parallel` are running. Choosing and
-    /// marking them running happen under one lock: concurrent calls can never start one twice nor
-    /// exceed the limit.
-    fn schedule(self: &Arc<Self>) {
-        if self.is_closing() {
-            return;
-        }
-        // Each queue has its own number of places; a download of an unknown queue counts as the
-        // main queue's.
-        let (limits, main_limit) = self.with_settings(|s| {
-            let limits: HashMap<u32, usize> = s.queues.iter().map(|q| (q.id, usize::from(q.max_parallel))).collect();
-            (limits, usize::from(s.max_parallel))
-        });
-        let queue_of = |q: u32| if limits.contains_key(&q) { q } else { 0 };
-        let limit_of = |q: u32| limits.get(&q).copied().unwrap_or(main_limit);
-        let now = Instant::now();
-        let launches: Vec<Launch> = {
-            let mut entries = lock(&self.entries);
-            let mut busy = lock(&self.busy);
-            let mut running: HashMap<u32, usize> = HashMap::new();
-            for e in entries.iter().filter(|e| e.occupies_slot()) {
-                *running.entry(queue_of(e.download.queue)).or_default() += 1;
-            }
-            let mut launches = Vec::new();
-            for e in entries.iter_mut() {
-                if !e.startable(now) || busy.contains(&e.download.id) {
-                    continue;
-                }
-                let queue = queue_of(e.download.queue);
-                let taken = running.entry(queue).or_default();
-                if *taken >= limit_of(queue) {
-                    continue;
-                }
-                if let Some(launch) = e.start(&self.limit) {
-                    busy.insert(launch.id);
-                    launches.push(launch);
-                    *taken += 1;
-                }
-            }
-            launches
-        };
-        if launches.is_empty() {
-            return;
-        }
-        self.changed();
-        launches.into_iter().for_each(|launch| self.run(launch));
-    }
-
-    fn run(self: &Arc<Self>, launch: Launch) {
-        let Launch { id, mut job, progress, cancel, via_proxy, insecure } = launch;
-        self.inflight.fetch_add(1, AcqRel);
-        let this = self.clone();
-        self.rt.spawn(async move {
-            this.add_login(&job.url, &mut job.headers);
-            let before = progress.downloaded.load(Relaxed);
-            let result = match this.client_for_url(&job.url, via_proxy, insecure).await {
-                Ok(client) => Ok(engine::run(&client, &job, progress.clone(), cancel).await),
-                Err(reason) => Err(reason),
-            };
-            let progressed = progress.downloaded.load(Relaxed) > before;
-            if matches!(result, Ok(Ok(Outcome::Completed))) {
-                // Marked before the list shows it complete (and can open it).
-                let target = job.target.clone();
-                let _ = tokio::task::spawn_blocking(move || mark_from_internet(&target)).await;
-            }
-            let auto_proxy = this.auto_proxy();
-            let (mut finished, mut verify) = (None, false);
-            this.update(id, |e| {
-                e.cancel = None;
-                let restart = std::mem::take(&mut e.restart);
-                if progressed {
-                    e.retries = 0;
-                }
-                let _ = match &result {
-                    Err(RouteError::InvalidProxy) => e.download.fail(Failure::InvalidProxy),
-                    Ok(Ok(Outcome::Completed)) => {
-                        let _ = e.download.start(); // a pause may have raced the last byte
-                        finished = Some(e.name.clone());
-                        verify = e.download.checksum.is_some();
-                        e.retries = 0;
-                        e.download.complete()
-                    }
-                    // Stopped to start again (new route, link, certificate choice): straight back.
-                    Ok(Ok(Outcome::Paused)) if restart => e.download.retry_later(),
-                    Ok(Ok(Outcome::Paused)) => Ok(()),
-                    // Network down, server busy: back in the queue, retried later on its own.
-                    Ok(Err(err)) if !err.is_permanent() && e.retries < AUTO_RETRIES && e.download.retry_later().is_ok() => {
-                        // Automatic proxy mode: a server the direct route cannot reach is tried
-                        // through the proxy, at once.
-                        let unreachable = matches!(err, engine::EngineError::Http(h) if h.is_connect() || h.is_timeout());
-                        let delay = if auto_proxy && !e.via_proxy && unreachable {
-                            e.via_proxy = true;
-                            Duration::ZERO
-                        } else {
-                            retry_delay(e.retries)
-                        };
-                        e.retry = Some(Retry { at: Instant::now() + delay, reason: failure_of(err) });
-                        e.retries += 1;
-                        Ok(())
-                    }
-                    Ok(Err(err)) => e.download.fail(failure_of(err)),
-                };
-            });
-            lock(&this.busy).remove(&id);
-            this.inflight.fetch_sub(1, AcqRel);
-            if verify {
-                this.verify(id);
-            }
-            if let Some(name) = finished
-                && this.with_settings(|s| s.notify)
-            {
-                notify::completed(&name);
-            }
-            this.schedule();
-        });
-    }
-
-    /// Replaces the link of a download that stopped working (expired, moved) and resumes it where
-    /// it was. The new link must lead to the same file: when the server tells its size and it
-    /// differs, the change is refused (the parts already downloaded would not fit). A stream (HLS)
-    /// or a video fetched with a separate audio track has no single size to compare.
-    pub fn change_url(self: &Arc<Self>, id: DownloadId, url: Url) {
-        let Some((total, headers, via_proxy, insecure, split)) = self.view(|es| {
-            es.iter().find(|e| e.download.id == id).map(|e| {
-                (e.progress.total.load(Relaxed), to_header_map(&e.headers), e.via_proxy, e.download.insecure, e.download.audio.is_some())
-            })
-        }) else {
-            return;
-        };
-        let this = self.clone();
-        self.rt.spawn(async move {
-            let size = match this.client_for_url(&url, via_proxy, insecure).await {
-                Ok(client) => engine::probe_once(&client, &url, &headers).await.ok().filter(|p| !p.hls).and_then(|p| p.size),
-                Err(_) => None,
-            };
-            if !split && total > 0 && size.is_some_and(|s| s != total) {
-                let (have, got) = (crate::ui::size_text(total), crate::ui::size_text(size.unwrap_or(0)));
-                this.notice(true, &trf!(
-                    "Lien refusé : le fichier fait {got}, pas {have} (ce n'est pas le même)",
-                    "Link refused: the file is {got}, not {have} (not the same file)",
-                    got = got,
-                    have = have
-                ));
-                return;
-            }
-            let changed = this.update(id, |e| {
-                if e.download.is_recording() || *e.download.status() == Status::Completed {
-                    return false;
-                }
-                e.download.url = url.clone();
-                e.retries = 0;
-                e.retry = None;
-                match e.download.status() {
-                    Status::Running => e.restart(),
-                    Status::Failed(_) => {
-                        let _ = e.download.enqueue();
-                    }
-                    _ => {}
-                }
-                true
-            });
-            if changed == Some(true) {
-                this.notice(false, tr!("Lien remplacé : le téléchargement reprend où il en était", "Link replaced: the download resumes where it was"));
-                this.schedule();
-            }
-        });
-    }
-
-    /// This download's own speed cap (KiB/s, 0 = none), applied at once if it runs.
-    pub fn set_speed_limit(&self, id: DownloadId, kib: u32) {
-        self.update(id, |e| {
-            e.download.speed_limit_kib = kib;
-            e.own_limit.set(u64::from(kib) * 1024);
-        });
-    }
-
-    pub fn move_to_queue(self: &Arc<Self>, id: DownloadId, queue: u32) {
-        self.update(id, |e| e.download.queue = queue);
-        self.schedule();
-    }
-
-    /// Accepts (or not) an invalid TLS certificate for this download only, and retries it.
-    pub fn set_insecure(self: &Arc<Self>, id: DownloadId, insecure: bool) {
-        self.update(id, |e| {
-            e.download.insecure = insecure;
-            match e.download.status() {
-                Status::Running => e.restart(),
-                Status::Failed(_) if insecure => {
-                    let _ = e.download.enqueue();
-                }
-                _ => {}
-            }
-        });
-        self.schedule();
-    }
-
     fn update<R>(&self, id: DownloadId, f: impl FnOnce(&mut Entry) -> R) -> Option<R> {
         let r = lock(&self.entries).iter_mut().find(|e| e.download.id == id).map(f);
         if r.is_some() {
@@ -713,11 +288,6 @@ impl Manager {
         let r = lock(&self.entries).iter_mut().find(|e| e.download.id == id).map(f);
         self.repaint();
         r
-    }
-
-    /// Total speed over the last minute, oldest first (bytes per second).
-    pub fn speed_history(&self) -> Vec<f32> {
-        lock(&self.history).iter().copied().collect()
     }
 
     /// The list changed: redraw now, write soon (see `dirty`).
@@ -753,102 +323,6 @@ impl Manager {
         if let Some(f) = self.repaint.get() {
             f();
         }
-    }
-
-    fn spawn_ticker(self: &Arc<Self>) {
-        let weak = Arc::downgrade(self);
-        self.rt.spawn(async move {
-            let (mut ticks, mut idle, mut last) = (0u32, 0u32, Instant::now());
-            loop {
-                // Nothing moving for a while: fewer wake-ups (a new download is started by the
-                // scheduler itself, not by this tick).
-                tokio::time::sleep(if idle >= IDLE_AFTER { IDLE_TICK } else { TICK }).await;
-                let Some(this) = weak.upgrade() else { return };
-                this.reap_idle_recordings();
-                let elapsed = std::mem::replace(&mut last, Instant::now()).elapsed();
-                let (moving, retry_due) = this.tick(elapsed);
-                let recording = !lock(&this.recordings).is_empty();
-                idle = if moving || retry_due || recording { 0 } else { idle.saturating_add(1) };
-                if moving {
-                    this.repaint();
-                }
-                if retry_due {
-                    this.schedule();
-                }
-                // Progress written now and then while transfers run: after a crash the list shows
-                // where each download was (the resume point itself lives in its `.rdm` file).
-                ticks = ticks.wrapping_add(1);
-                if moving && ticks.is_multiple_of(PROGRESS_SAVE_TICKS) {
-                    this.dirty.store(true, Release);
-                }
-                if this.dirty.load(Acquire) {
-                    let _ = tokio::task::spawn_blocking(move || this.persist()).await;
-                }
-            }
-        });
-    }
-
-    /// Updates speeds and the history. Returns whether the UI has something moving to show (a
-    /// running download, a retry countdown, the chart still scrolling back to zero), and whether
-    /// a download waiting to retry is due.
-    fn tick(&self, elapsed: Duration) -> (bool, bool) {
-        let (mut active, mut total, mut due) = (false, 0.0, false);
-        let now = Instant::now();
-        let auto_proxy = self.auto_proxy();
-        for e in lock(&self.entries).iter_mut() {
-            let (done, total_size, _) = e.progress.snapshot();
-            let running = *e.download.status() == Status::Running;
-            let instant = done.saturating_sub(e.last) as f64 / elapsed.as_secs_f64().max(0.05);
-            e.speed = if running { e.speed * 0.6 + instant * 0.4 } else { 0.0 };
-            e.last = done;
-            let waiting = *e.download.status() == Status::Queued && e.retry.is_some();
-            active |= running || waiting || e.resolving;
-            due |= waiting && e.startable(now);
-            total += e.speed;
-            // Automatic proxy mode: a download stuck slow on the direct route switches (it keeps
-            // its progress). Not near its end: a nearly finished file is not worth a restart.
-            let settled = e.started.is_some_and(|t| t.elapsed() > SLOW_GRACE);
-            let far_from_done = total_size == 0 || done.saturating_mul(10) < total_size.saturating_mul(9);
-            // Slow because the user capped it: the proxy would not help.
-            let capped = engine::Job::effective_limit(&self.limit, &e.own_limit);
-            let chosen = capped > 0 && (capped as f64) < SLOW_SPEED * 4.0;
-            if auto_proxy && running && !e.via_proxy && !e.download.is_recording() && settled && far_from_done && !chosen && e.speed < SLOW_SPEED {
-                let since = *e.slow_since.get_or_insert(now);
-                if now.duration_since(since) >= SLOW_FOR {
-                    e.via_proxy = true;
-                    e.restart();
-                }
-            } else {
-                e.slow_since = None;
-            }
-        }
-        let mut history = lock(&self.history);
-        history.pop_front();
-        history.push_back(total as f32);
-        (active || history.iter().any(|&s| s > 0.0), due)
-    }
-}
-
-/// What an engine error means for the download (never its URL: it may carry tokens).
-fn failure_of(err: &engine::EngineError) -> Failure {
-    use engine::EngineError as E;
-    match err {
-        E::Http(e) if e.is_redirect() => Failure::RedirectRefused,
-        _ if err.is_certificate() => Failure::InvalidCertificate,
-        E::Http(e) => match e.status() {
-            Some(status) => Failure::Status(status.as_u16()),
-            None if e.is_timeout() => Failure::TimedOut,
-            None if e.is_connect() => Failure::CannotConnect,
-            None => Failure::ConnectionInterrupted,
-        },
-        E::Io(e) => Failure::Disk(e.to_string()),
-        E::RangeIgnored => Failure::InconsistentRange,
-        E::Empty => Failure::NoData,
-        E::Truncated => Failure::CutBeforeTheEnd,
-        E::Stalled => Failure::ConnectionInterrupted,
-        E::LocalNetwork => Failure::LocalNetwork,
-        E::Playlist(e) => Failure::Stream(e.to_string()),
-        E::Mux(e) => Failure::Merge(e.to_string()),
     }
 }
 

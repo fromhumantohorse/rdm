@@ -40,6 +40,8 @@ const MAX_RECORDING_SOURCES: usize = 64;
 /// More than any real recording (12 hours of 4K): the page's scripts can see the recording's
 /// token, and must not be able to fill the disk through it.
 const MAX_RECORDING_BYTES: u64 = 64 << 30;
+/// A recording that receives nothing for this long is considered abandoned.
+const RECORDING_IDLE: Duration = Duration::from_secs(120);
 
 impl Recording {
     pub(super) fn part(&self, ms: u32, track: Track) -> PathBuf {

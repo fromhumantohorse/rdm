@@ -3,6 +3,13 @@
 
 use super::*;
 
+/// A new link shows in the list at once; asking its server for the real file name takes at most this.
+const NAME_TIMEOUT: Duration = Duration::from_secs(10);
+/// The same link sent again within this window is the same request (double click, page retrying).
+const DUPLICATE_WINDOW: Duration = Duration::from_secs(5);
+/// Browser downloads waiting for the user's go-ahead at most (the rest are dropped).
+const MAX_TO_CONFIRM: usize = 50;
+
 /// What the browser (or the UI) hands us.
 #[derive(Debug, Deserialize)]
 pub struct AddRequest {

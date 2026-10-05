@@ -274,6 +274,36 @@ pub fn category(category: domain::Category) -> &'static str {
     text(category.label(false), category.label(true))
 }
 
+/// A size in the interface's units: `1,5 Ko` in French, `1.5 KB` in English.
+pub fn bytes(n: u64) -> String {
+    let units: [&str; 5] = if french() { ["o", "Ko", "Mo", "Go", "To"] } else { ["B", "KB", "MB", "GB", "TB"] };
+    let mut v = n as f64;
+    let mut unit = 0;
+    while v >= 1024.0 && unit < units.len() - 1 {
+        v /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 { format!("{n} {}", units[0]) } else { format!("{} {}", decimal(v), units[unit]) }
+}
+
+pub fn speed(bytes_per_sec: f64) -> String {
+    format!("{}/s", bytes(bytes_per_sec.max(0.0) as u64))
+}
+
+/// One decimal: `1,5` in French and most languages, `1.5` in English and East Asian ones.
+fn decimal(v: f64) -> String {
+    let text = format!("{v:.1}");
+    if decimal_comma() { text.replace('.', ",") } else { text }
+}
+
+pub fn duration(secs: u64) -> String {
+    match secs {
+        0..60 => format!("{secs} s"),
+        60..3600 => format!("{} min {:02} s", secs / 60, secs % 60),
+        _ => format!("{} h {:02} min", secs / 3600, secs % 3600 / 60),
+    }
+}
+
 /// Tests that switch the (global) language run one at a time.
 #[cfg(test)]
 pub static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -468,6 +498,25 @@ mod tests {
 
         assert!(untranslated.is_empty(), "shown but not translated: {untranslated:#?}");
         assert!(dead.is_empty(), "translated but never shown: {dead:#?}");
+    }
+
+    #[test]
+    fn sizes_take_the_units_and_the_decimal_mark_of_the_language() {
+        let _one_at_a_time = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        set(English);
+        assert_eq!(bytes(1536), "1.5 KB");
+        set(French);
+        assert_eq!(bytes(512), "512 o");
+        assert_eq!(bytes(1536), "1,5 Ko");
+        assert_eq!(speed(3.5 * 1024.0 * 1024.0), "3,5 Mo/s");
+    }
+
+    #[test]
+    fn durations_show_their_two_largest_units() {
+        assert_eq!(duration(59), "59 s");
+        assert_eq!(duration(125), "2 min 05 s");
+        assert_eq!(duration(7260), "2 h 01 min");
     }
 
     #[test]

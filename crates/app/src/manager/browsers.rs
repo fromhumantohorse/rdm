@@ -24,6 +24,35 @@ const MAX_PAIRED: usize = 8;
 /// Browsers the extension may report from (see `Manager::browser_seen`).
 const MAX_BROWSERS: usize = 32;
 
+pub(super) const BROWSERS_FILE: &str = "browsers.json";
+/// Extensions to remove (see `Manager::remove_extension`).
+pub(super) const UNINSTALLS_FILE: &str = "uninstalls.json";
+const UNINSTALL_TTL_SECS: u64 = 24 * 3600;
+/// Browsers added by hand (see `Manager::add_browser`).
+pub(super) const CUSTOM_BROWSERS_FILE: &str = "custom_browsers.json";
+/// How long after RDM opened a browser to install the extension its tab is still taken as RDM's.
+const INSTALL_TAB_TTL: Duration = Duration::from_secs(15 * 60);
+
+/// Installing the extension into one browser, as the extension window shows it.
+#[derive(Debug, Clone)]
+pub enum Install {
+    Working,
+    Done(Installed),
+    Failed(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct Installed {
+    /// The unpacked extension (Chromium-based browsers: "load unpacked" from here).
+    pub folder: PathBuf,
+    /// The browser was opened on its extensions page (or on the package to confirm).
+    pub launched: bool,
+    /// Firefox: the signed package is installing for good (Firefox asks to confirm).
+    pub signed: bool,
+    /// Firefox: the unsigned package, for the editions that accept one.
+    pub xpi: Option<PathBuf>,
+}
+
 impl FirefoxPairing {
     /// `firefox.json`: a list of origins (RDM 0.2 wrote a single one).
     pub(super) fn load() -> VecDeque<String> {

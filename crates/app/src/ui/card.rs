@@ -7,11 +7,12 @@ use eframe::egui::{
 use egui_phosphor::regular as icon;
 
 use super::{
-    Action, App, category_icon, edit::Field, failure, queue_name, scan_running,
+    Action, App, category_icon, edit::Field, failure, queue_name,
     theme::{self, Palette},
-    widgets::{self, bytes, duration, ghost_button, icon_button, kbd, speed},
+    widgets::{self, ghost_button, icon_button, kbd},
 };
 use crate::{
+    i18n::{bytes, duration, speed},
     manager::{Entry, Scan, Verify},
     settings::Queue,
     tr, trf,
@@ -338,6 +339,10 @@ fn scan_badge(ui: &mut Ui, p: &Palette, e: &Entry, right: f32, y: f32, actions: 
         actions.push(action);
     }
     (rect, running)
+}
+
+fn scan_running(e: &Entry) -> bool {
+    matches!(e.scan, Scan::Running(_))
 }
 
 fn stage_text(stage: Stage) -> String {
