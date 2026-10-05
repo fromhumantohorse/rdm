@@ -206,7 +206,7 @@ impl Manager {
                     None => {
                         stage(Stage::Hashing);
                         let file = path.clone();
-                        let hash = tokio::task::spawn_blocking(move || checksum::digest(&file, checksum::Algo::Sha256))
+                        let hash = tokio::task::spawn_blocking(move || checksum::digest(&file, domain::HashAlgo::Sha256))
                             .await
                             .map_err(|_| virustotal::Error::Io)?
                             .map_err(|_| virustotal::Error::Io)?;

@@ -6,7 +6,7 @@ const ext = globalThis.browser ?? globalThis.chrome;
 const t = (key, ...subs) => ext.i18n.getMessage(key, subs.map(String)) || key;
 
 const BRIDGE = "http://127.0.0.1:9614";
-/** RDM's connector, started by the browser itself (see RDM's `native.rs`). */
+/** RDM's connector, started by the browser itself (see RDM's `native/`). */
 const NATIVE_HOST = "rdm.bridge";
 /** An idle connection to the connector is closed: the browser (and the connector) can rest. */
 const NATIVE_IDLE_MS = 60_000;

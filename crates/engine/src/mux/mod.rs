@@ -1,14 +1,18 @@
 //! Remuxes a video-only and an audio-only fragmented MP4 (DASH) into one MP4. No re-encoding:
 //! boxes are copied, track ids renumbered and fragments interleaved by decode time.
 
+mod boxes;
+mod track;
+
 use std::{
     fs::File,
     io::{BufWriter, Write},
-    ops::Range,
     path::Path,
 };
 
+use boxes::{FourCc, atoms, boxed, full_box_field, locate, read_u32, version, write_u32};
 use memmap2::Mmap;
+use track::Track;
 
 #[derive(Debug, thiserror::Error)]
 pub enum MuxError {
@@ -55,203 +59,6 @@ pub enum Mp4Error {
     TruncatedMvhd,
     #[error("overlapping boxes")]
     OverlappingBoxes,
-}
-
-type FourCc = [u8; 4];
-
-struct Atom<'a> {
-    kind: FourCc,
-    start: usize,
-    head: usize,
-    bytes: &'a [u8],
-}
-
-fn atoms(buf: &[u8]) -> impl Iterator<Item = Result<Atom<'_>, MuxError>> {
-    let mut pos = 0;
-    std::iter::from_fn(move || {
-        (pos < buf.len()).then(|| {
-            let atom = parse_at(buf, pos);
-            pos = atom.as_ref().map_or(buf.len(), |a| pos + a.bytes.len());
-            atom
-        })
-    })
-}
-
-fn parse_at(buf: &[u8], pos: usize) -> Result<Atom<'_>, MuxError> {
-    let bad = MuxError::Invalid(Mp4Error::BadBoxHeader);
-    let h = buf.get(pos..pos + 8).ok_or(MuxError::Invalid(Mp4Error::TruncatedBox))?;
-    let kind: FourCc = h[4..8].try_into().map_err(|_| MuxError::Invalid(Mp4Error::TruncatedBox))?;
-    let (size, head) = match u32::from_be_bytes([h[0], h[1], h[2], h[3]]) {
-        0 => (buf.len() - pos, 8),
-        1 => {
-            let large = buf.get(pos + 8..pos + 16).ok_or(MuxError::Invalid(Mp4Error::TruncatedBox))?;
-            (usize::try_from(u64::from_be_bytes(large.try_into().map_err(|_| MuxError::Invalid(Mp4Error::TruncatedBox))?)).map_err(|_| MuxError::Invalid(Mp4Error::BoxTooLarge))?, 16)
-        }
-        n => (n as usize, 8),
-    };
-    let end = pos.checked_add(size).filter(|&e| e <= buf.len() && size >= head).ok_or(bad)?;
-    Ok(Atom { kind, start: pos, head, bytes: &buf[pos..end] })
-}
-
-/// Absolute range of the body of the box at `path` (e.g. `moof/traf/tfdt`).
-fn locate(buf: &[u8], path: &[&FourCc]) -> Option<Range<usize>> {
-    let (first, rest) = path.split_first()?;
-    let atom = atoms(buf).map_while(Result::ok).find(|a| &a.kind == *first)?;
-    let body = atom.start + atom.head..atom.start + atom.bytes.len();
-    if rest.is_empty() {
-        return Some(body);
-    }
-    let inner = locate(&buf[body.clone()], rest)?;
-    Some(body.start + inner.start..body.start + inner.end)
-}
-
-fn read_u32(buf: &[u8], at: usize) -> Option<u32> {
-    Some(u32::from_be_bytes(buf.get(at..at.checked_add(4)?)?.try_into().ok()?))
-}
-
-fn read_u64(buf: &[u8], at: usize) -> Option<u64> {
-    Some(u64::from_be_bytes(buf.get(at..at.checked_add(8)?)?.try_into().ok()?))
-}
-
-fn write_u32(buf: &mut [u8], at: usize, v: u32) -> Result<(), MuxError> {
-    buf.get_mut(at..at + 4).ok_or(MuxError::Invalid(Mp4Error::FieldOutOfBounds))?.copy_from_slice(&v.to_be_bytes());
-    Ok(())
-}
-
-/// Offset of a field in a full box (`version`/`flags` first) whose layout widens in version 1.
-fn full_box_field(buf: &[u8], body: &Range<usize>, v0: usize, v1: usize) -> usize {
-    body.start + 4 + if version(buf, body) == 1 { v1 } else { v0 }
-}
-
-/// Full-box version byte; 0 for an (invalid) empty body instead of panicking.
-fn version(buf: &[u8], body: &Range<usize>) -> u8 {
-    buf.get(body.start).copied().unwrap_or(0)
-}
-
-fn patch(buf: &mut [u8], path: &[&FourCc], field: impl Fn(&[u8], &Range<usize>) -> usize, v: u32) -> Result<(), MuxError> {
-    let body = locate(buf, path).ok_or(MuxError::Invalid(Mp4Error::MissingBox))?;
-    let at = field(buf, &body);
-    write_u32(buf, at, v)
-}
-
-fn boxed(kind: &FourCc, parts: &[&[u8]]) -> Vec<u8> {
-    let len: usize = 8 + parts.iter().map(|p| p.len()).sum::<usize>();
-    let mut out = Vec::with_capacity(len);
-    out.extend_from_slice(&u32::try_from(len).unwrap_or(0).to_be_bytes());
-    out.extend_from_slice(kind);
-    parts.iter().for_each(|p| out.extend_from_slice(p));
-    out
-}
-
-struct Track<'a> {
-    ftyp: Option<&'a [u8]>,
-    mvhd: &'a [u8],
-    trak: &'a [u8],
-    trex: &'a [u8],
-    /// Media timescale (ticks per second).
-    timescale: u32,
-    /// End of the last sample, in media ticks: the real track duration.
-    end: u64,
-    /// (decode time in seconds, moof…mdat bytes)
-    fragments: Vec<(f64, &'a [u8])>,
-}
-
-impl<'a> Track<'a> {
-    /// Parses one track's init segment and fragments. Tolerates what a recorded stream can hold:
-    /// a truncated last box (recording stopped mid-segment), repeated init segments, duplicated
-    /// or out-of-order fragments. If the init segment changed (quality switch), the group of
-    /// fragments with the most data wins: mixing encodings would not decode.
-    fn parse(buf: &'a [u8]) -> Result<Self, MuxError> {
-        let mut ftyp = None;
-        // (init segment, its fragments) in order of appearance; identical inits are merged.
-        let mut groups: Vec<(Atom<'a>, Vec<&'a [u8]>)> = Vec::new();
-        let mut moof_start = None;
-        for atom in atoms(buf) {
-            let Ok(atom) = atom else { break }; // truncated tail: keep everything before it
-            match &atom.kind {
-                b"ftyp" => ftyp = Some(atom.bytes),
-                b"moov" => {
-                    if !groups.last().is_some_and(|(init, _)| init.bytes == atom.bytes) {
-                        groups.push((atom, Vec::new()));
-                    }
-                }
-                b"moof" => moof_start = Some(atom.start),
-                b"mdat" => {
-                    if let (Some(start), Some((_, frags))) = (moof_start.take(), groups.last_mut()) {
-                        frags.push(&buf[start..atom.start + atom.bytes.len()]);
-                    }
-                }
-                _ => {}
-            }
-        }
-        let (moov, raw) = groups
-            .into_iter()
-            .max_by_key(|(_, frags)| frags.iter().map(|f| f.len()).sum::<usize>())
-            .ok_or(MuxError::Invalid(Mp4Error::MissingMoov))?;
-        let body = &moov.bytes[moov.head..];
-        let child = |parent: &'a [u8], kind: &FourCc| atoms(parent).map_while(Result::ok).find(|a| &a.kind == kind);
-        let mvex = child(body, b"mvex").ok_or(MuxError::Invalid(Mp4Error::NotFragmented))?;
-        let mvex_body = &mvex.bytes[mvex.head..];
-        let trak = child(body, b"trak").ok_or(MuxError::Invalid(Mp4Error::MissingTrak))?.bytes;
-
-        let mdhd = locate(trak, &[b"trak", b"mdia", b"mdhd"]).ok_or(MuxError::Invalid(Mp4Error::MissingMdhd))?;
-        let timescale = read_u32(trak, full_box_field(trak, &mdhd, 8, 16)).filter(|&t| t > 0).ok_or(MuxError::Invalid(Mp4Error::BadTimescale))?;
-        let trex = child(mvex_body, b"trex").ok_or(MuxError::Invalid(Mp4Error::MissingTrex))?.bytes;
-        let default_duration = read_u32(trex, 8 + 12).unwrap_or(0);
-
-        let mut end = 0u64;
-        let mut timed = raw
-            .into_iter()
-            .map(|frag| {
-                let tfdt = locate(frag, &[b"moof", b"traf", b"tfdt"]).ok_or(MuxError::Invalid(Mp4Error::MissingTfdt))?;
-                let t = match version(frag, &tfdt) {
-                    1 => read_u64(frag, tfdt.start + 4),
-                    _ => read_u32(frag, tfdt.start + 4).map(u64::from),
-                }
-                .ok_or(MuxError::Invalid(Mp4Error::BadTfdt))?;
-                end = end.max(t.saturating_add(fragment_duration(frag, default_duration).unwrap_or(0)));
-                Ok((t, frag))
-            })
-            .collect::<Result<Vec<_>, MuxError>>()?;
-        // Recorded streams may repeat a fragment (re-fetch after a seek) or append out of order.
-        timed.sort_by_key(|(t, _)| *t);
-        timed.dedup_by_key(|(t, _)| *t);
-        let fragments: Vec<(f64, &[u8])> = timed.into_iter().map(|(t, f)| (t as f64 / f64::from(timescale), f)).collect();
-        if fragments.is_empty() {
-            return Err(MuxError::Invalid(Mp4Error::NoFragments));
-        }
-
-        Ok(Self {
-            ftyp,
-            mvhd: child(body, b"mvhd").ok_or(MuxError::Invalid(Mp4Error::MissingMvhd))?.bytes,
-            trak,
-            trex,
-            timescale,
-            end,
-            fragments,
-        })
-    }
-
-    /// Track box renumbered to `id`, with its real duration (`movie_duration` in movie ticks).
-    fn trak_with(&self, id: u32, movie_duration: u64) -> Result<Vec<u8>, MuxError> {
-        let mut trak = self.trak.to_vec();
-        patch(&mut trak, &[b"trak", b"tkhd"], |b, r| full_box_field(b, r, 8, 16), id)?;
-        write_duration(&mut trak, &[b"trak", b"tkhd"], (16, 24), movie_duration)?;
-        write_duration(&mut trak, &[b"trak", b"mdia", b"mdhd"], (12, 20), self.end)?;
-        Ok(trak)
-    }
-
-    /// Duration converted to another timescale.
-    fn duration_in(&self, timescale: u32) -> u64 {
-        let d = u128::from(self.end) * u128::from(timescale) / u128::from(self.timescale);
-        u64::try_from(d).unwrap_or(u64::MAX)
-    }
-
-    fn trex_with_id(&self, id: u32) -> Result<Vec<u8>, MuxError> {
-        let mut trex = self.trex.to_vec();
-        patch(&mut trex, &[b"trex"], |_, r| r.start + 4, id)?;
-        Ok(trex)
-    }
 }
 
 /// Builds the combined `ftyp` + `moov` header (video = track 1, audio = track 2), with real

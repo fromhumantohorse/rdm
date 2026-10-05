@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use url::Url;
 use uuid::Uuid;
 
-use crate::Failure;
+use crate::{Checksum, Failure};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct DownloadId(Uuid);
@@ -52,7 +52,9 @@ pub struct Download {
     pub id: DownloadId,
     pub url: Url,
     pub target: PathBuf,
-    pub connections: u8,
+    /// At most this many connections: 1 to `MAX_CONNECTIONS`, whatever a saved list says.
+    #[serde(deserialize_with = "connections_in_range")]
+    connections: u8,
     /// Audio stream muxed into `target` together with the video-only `url`.
     #[serde(default)]
     pub audio: Option<Url>,
@@ -64,9 +66,9 @@ pub struct Download {
     /// Its own speed cap in KiB/s, on top of the global one (0 = none).
     #[serde(default)]
     pub speed_limit_kib: u32,
-    /// Expected checksum (`md5:…`, `sha1:…`, `sha256:…`, `sha512:…`), verified once complete.
-    #[serde(default)]
-    pub checksum: Option<String>,
+    /// Expected checksum, verified once complete.
+    #[serde(default, deserialize_with = "Checksum::deserialize_saved")]
+    pub checksum: Option<Checksum>,
     /// Accept an invalid TLS certificate for this download only (the user's explicit choice).
     #[serde(default)]
     pub insecure: bool,
@@ -97,6 +99,10 @@ impl Download {
 
     pub fn is_recording(&self) -> bool {
         self.source == Source::Recording
+    }
+
+    pub const fn connections(&self) -> u8 {
+        self.connections
     }
 
     pub const fn status(&self) -> &Status {
@@ -144,6 +150,10 @@ impl Download {
         self.status = next;
         Ok(())
     }
+}
+
+fn connections_in_range<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u8, D::Error> {
+    Ok(u8::deserialize(deserializer)?.clamp(1, crate::MAX_CONNECTIONS))
 }
 
 #[cfg(test)]
@@ -212,6 +222,26 @@ mod tests {
         let d: Download = serde_json::from_str(json).unwrap();
         assert_eq!(d.status(), &Status::Paused);
         assert!(d.audio.is_none());
+    }
+
+    #[test]
+    fn a_saved_connection_count_is_brought_back_within_bounds() {
+        let saved = |connections: u8| {
+            let json = format!(r#"{{"id":"67e55044-10b1-426f-9247-bb680e5fe0c8","url":"https://x.io/a.zip","target":"a.zip","connections":{connections},"status":"Paused"}}"#);
+            serde_json::from_str::<Download>(&json).unwrap().connections()
+        };
+
+        assert_eq!([saved(0), saved(8), saved(255)], [1, 8, crate::MAX_CONNECTIONS]);
+    }
+
+    #[test]
+    fn an_unreadable_saved_checksum_is_dropped_not_the_download() {
+        let json = r#"{"id":"67e55044-10b1-426f-9247-bb680e5fe0c8","url":"https://x.io/a.zip","target":"a.zip",
+            "connections":8,"checksum":"sha256:abc","status":"Paused"}"#;
+
+        let d: Download = serde_json::from_str(json).unwrap();
+
+        assert_eq!(d.checksum, None);
     }
 
     #[test]

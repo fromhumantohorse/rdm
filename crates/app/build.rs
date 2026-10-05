@@ -15,7 +15,7 @@ fn main() {
 }
 
 /// The browser extension (`extension/`, tests excluded) goes into the executable: RDM installs it
-/// into the browsers and keeps the installed copy up to date (see `src/extension.rs`).
+/// into the browsers and keeps the installed copy up to date (see `src/extension/`).
 fn embed_extension() {
     let root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("../../extension");
     println!("cargo:rerun-if-changed={}", root.display());

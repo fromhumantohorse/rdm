@@ -37,7 +37,7 @@ impl Editor {
             let e = entries.iter().find(|e| e.download.id == id)?;
             let text = match field {
                 Field::Url => e.download.url.to_string(),
-                Field::Checksum => e.download.checksum.clone().unwrap_or_default(),
+                Field::Checksum => e.download.checksum.as_ref().map(ToString::to_string).unwrap_or_default(),
                 Field::SpeedLimit => String::new(),
             };
             Some(Self { id, field, name: e.name.clone(), text, mbps: f64::from(e.download.speed_limit_kib) / 1024.0, error: None })

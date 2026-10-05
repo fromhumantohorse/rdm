@@ -75,7 +75,7 @@ impl Manager {
         };
         let this = self.clone();
         self.rt.spawn_blocking(move || {
-            if let Ok(hash) = checksum::digest(&path, checksum::Algo::Sha256) {
+            if let Ok(hash) = checksum::digest(&path, domain::HashAlgo::Sha256) {
                 this.update(id, |e| e.sha256 = Some(hash));
             }
         });

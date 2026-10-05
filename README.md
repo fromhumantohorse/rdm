@@ -99,7 +99,7 @@ Running downloads are paused cleanly and resume afterwards. If the download of t
 
 | Crate / folder   | Layer            | Role                                                                       |
 |------------------|------------------|----------------------------------------------------------------------------|
-| `crates/domain`  | Domain           | `Download` aggregate (states, transitions), `Segment`, categories and formats |
+| `crates/domain`  | Domain           | `Download` aggregate (states, transitions, why it failed), `Segment`, `Checksum`, categories and formats |
 | `crates/engine`  | Infrastructure   | Multi-connection HTTP engine, HLS, MP4 muxing, anti-SSRF, rate limiter, adaptive pacing |
 | `crates/app`     | Application + UI | Queues, settings, local bridge `127.0.0.1:9614`, native messaging connector, egui interface, notification area, updates |
 | `extension/`     | Browser          | Chrome/Brave/Opera/Edge/Firefox MV3: interception, video detection, YouTube extractor (bundled in RDM, which installs it) |
@@ -108,15 +108,15 @@ Where to look, one concern per file:
 
 | Where | What |
 |---|---|
-| `engine/src/transfer.rs` · `slots.rs` · `pace.rs` | One download: its connections, the pieces they share (dynamic segmentation, stragglers), how many connections the server and the network take |
-| `engine/src/probe.rs` · `net.rs` · `rate.rs` | First request (size, name, range support), anti-SSRF and DNS cache, speed limits |
-| `engine/src/hls.rs` · `merged.rs` · `mux.rs` | HLS playlists, separate video and audio tracks, their MP4 merge |
-| `app/src/manager/` | The application service: `mod.rs` (queues, scheduling, ticker), `add.rs` (new downloads), `entry.rs` (a download of the list), `files.rs` (names on disk), `routes.rs` (proxy, clients, logins), `online.rs` (updates, VirusTotal), `browsers.rs`, `recording.rs`, `checksum.rs`, `clipboard.rs` |
-| `app/src/bridge.rs` · `local.rs` · `native.rs` | The local bridge and who may use it, the browsers' native connector |
-| `app/src/settings.rs` · `secrets.rs` · `i18n.rs` | Settings files, encrypted passwords, the 16 languages |
-| `app/src/update/` | Updates: `mod.rs` (the check, how RDM was installed), `package.rs` (download, SHA-256, Ed25519 signature), `install.rs` (Windows assistant, Linux binary or package) |
-| `app/src/virustotal.rs` · `ytdlp.rs` · `extension.rs` | VirusTotal, the YouTube module, the bundled extension |
-| `app/src/ui/` | The egui interface: `theme` → `widgets` → `chrome` (sidebar, header, dashboard), `card` (the list), `dialogs/`, `toast` |
+| `engine/src/transfer/` · `slots.rs` · `pace.rs` | One download: `mod.rs` (first request, connections added while they help), `connection.rs` (one connection), `disk.rs`, `resume.rs` (the `.rdm` state); the pieces connections share (dynamic segmentation, stragglers); how many connections the server and the network take |
+| `engine/src/probe.rs` · `net.rs` · `rate.rs` · `client.rs` | First request (size, name, range support), anti-SSRF and DNS cache, speed limits, the HTTP client and its route (proxy) |
+| `engine/src/hls/` · `merged.rs` · `mux/` | HLS (`playlist.rs`, `fetch.rs`: segments, AES-128), separate video and audio tracks, their MP4 merge (`boxes.rs`, `track.rs`) |
+| `app/src/manager/` | The application service: `mod.rs` (state, messages, the list on disk), `scheduler.rs` (starting downloads, what their end means), `ticker.rs` (speeds, chart, automatic proxy), `control.rs` (what the user does to a download), `preferences.rs`, `add.rs` (new downloads), `entry.rs` (a download of the list), `files.rs` (names on disk), `routes.rs` (proxy, clients, logins), `online.rs` (updates, VirusTotal, YouTube module), `browsers.rs`, `recording.rs`, `checksum.rs`, `clipboard.rs` |
+| `app/src/bridge/` · `local.rs` · `native/` | The local bridge (`access.rs`: who may use it; `routes.rs`, `youtube.rs`, `recording.rs`; `running.rs`: talking to the RDM already running), the browsers' native connector (`register.rs`) |
+| `app/src/settings/` · `secrets.rs` · `i18n.rs` | Settings (`store.rs`: RDM's own files), encrypted passwords, the 16 languages and how sizes and durations are written |
+| `app/src/update/` | Updates: `mod.rs` (the check), `detect.rs` (how RDM was installed), `package.rs` (download, SHA-256, Ed25519 signature), `install/` (Windows assistant, Linux binary or package), `error.rs` |
+| `app/src/virustotal.rs` · `ytdlp/` · `extension/` | VirusTotal, the YouTube module (`setup.rs`, `extract.rs`, `process.rs`), the bundled extension (`browser.rs`: the browsers it runs in) |
+| `app/src/ui/` | The egui interface: `theme` → `widgets/` → `chrome/` (sidebar, header, dashboard), `card/` (the list), `dialogs/`, `toast`; `app.rs` (one window), `action.rs`, `filter.rs`, `desktop.rs` |
 
 ## VirusTotal
 

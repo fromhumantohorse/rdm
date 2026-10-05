@@ -1,30 +1,10 @@
-//! The frame around the list: sidebar (brand, filters, speed limit), header (add links, search)
-//! and the dashboard (current speed, last minute's chart).
+//! The sidebar: brand, filters with their counts, named queues, and the cards at its foot (speed
+//! limit, extension, update).
 
-use eframe::egui::{
-    Align, Align2, Color32, Context, Frame, Id, Image, Layout, Margin, Panel, Rect, RichText, Sense, Stroke, StrokeKind,
-    Ui, UiBuilder, Vec2, pos2, vec2,
-};
-use egui_phosphor::regular as icon;
-
-use super::{
-    ADD_ID, Action, App, Filter, NAV, SEARCH_ID, STATUS_FILTERS,
-    theme::{self, Palette},
-    widgets::{self, ICON_BUTTON, accent_button, accent_button_width, caption, field, icon_button},
-};
-use crate::{
-    i18n::{duration, speed},
-    manager::Stats,
-    settings::Theme,
-    tr, trf, update,
-};
-
-const HEADER_GAP: f32 = 10.0;
-const SEARCH_WIDTH: f32 = 240.0;
-const MIN_ADD_WIDTH: f32 = 200.0;
+use super::*;
 
 impl App<'_> {
-    pub(super) fn sidebar(&mut self, root: &mut Ui, actions: &mut Vec<Action>) {
+    pub(in crate::ui) fn sidebar(&mut self, root: &mut Ui, actions: &mut Vec<Action>) {
         let p = Palette::of(root);
         // One pass over the whole history per frame, whatever its length.
         let counts = self.manager.view(|es| {
@@ -95,7 +75,7 @@ impl App<'_> {
                     actions.push(Action::OpenSettings);
                 }
                 ui.add_space(2.0);
-                if super::browsers::card(ui, &p, super::browsers::connected(&self.manager)) {
+                if crate::ui::browsers::card(ui, &p, crate::ui::browsers::connected(&self.manager)) {
                     actions.push(Action::OpenBrowsers);
                 }
                 if let Some(action) = self.update_card(ui, &p) {
@@ -183,109 +163,6 @@ impl App<'_> {
         painter.text(pos2(tile.right() + 12.0, rect.top() + 39.0), Align2::LEFT_CENTER, value, theme::semibold(14.0), p.text);
         response.on_hover_text(tr!("Modifier dans les paramètres", "Change in the settings"))
     }
-
-    pub(super) fn header(&mut self, root: &mut Ui) {
-        let ctx = root.ctx().clone();
-        Panel::top("header")
-            .exact_size(74.0)
-            .frame(Frame::new().inner_margin(Margin { left: 26, right: 22, top: 18, bottom: 14 }))
-            .show_separator_line(false)
-            .show(root, |ui| {
-                ui.horizontal_centered(|ui| {
-                    let gap = HEADER_GAP;
-                    ui.spacing_mut().item_spacing.x = gap;
-                    let download = tr!("Télécharger", "Download");
-                    let search_block = SEARCH_WIDTH + 2.0 * (gap + ICON_BUTTON);
-                    let button = accent_button_width(ui, icon::DOWNLOAD_SIMPLE, download);
-                    let add_width = (ui.available_width() - button - search_block - 2.0 * gap).max(MIN_ADD_WIDTH);
-                    let add = field(ui, Id::new(ADD_ID), &mut self.memo.url, tr!("Collez un ou plusieurs liens à télécharger…", "Paste one or more links to download…"), icon::LINK, add_width);
-                    let enter = add.lost_focus() && ui.input(|i| i.key_pressed(eframe::egui::Key::Enter));
-                    if (accent_button(ui, icon::DOWNLOAD_SIMPLE, download).clicked() || enter) && !self.memo.url.trim().is_empty() {
-                        let text = std::mem::take(&mut self.memo.url);
-                        if self.submit(&text) == 0 {
-                            self.memo.url = text;
-                        }
-                    }
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if icon_button(ui, icon::GEAR_SIX, tr!("Paramètres", "Settings"), None).clicked() {
-                            self.open_settings();
-                        }
-                        let dark = ui.visuals().dark_mode;
-                        let (glyph, tip, next) =
-                            if dark { (icon::SUN, tr!("Thème clair", "Light theme"), Theme::Light) } else { (icon::MOON, tr!("Thème sombre", "Dark theme"), Theme::Dark) };
-                        if icon_button(ui, glyph, tip, None).clicked() {
-                            self.set_theme(&ctx, next);
-                        }
-                        field(ui, Id::new(SEARCH_ID), &mut self.memo.search, tr!("Rechercher  (Ctrl+F)", "Search  (Ctrl+F)"), icon::MAGNIFYING_GLASS, SEARCH_WIDTH);
-                    });
-                });
-            });
-    }
-
-    pub(super) fn set_theme(&mut self, ctx: &Context, theme: Theme) {
-        let mut settings = self.manager.settings();
-        settings.theme = theme;
-        ctx.set_theme(super::preference(theme));
-        if let Some(draft) = &mut self.settings {
-            draft.theme = theme;
-        }
-        self.manager.apply_settings(settings);
-        self.manager.save_settings();
-    }
-
-    /// Current speed in large type, the last minute as a chart, what is running and waiting.
-    pub(super) fn dashboard(&mut self, ui: &mut Ui, stats: Stats) {
-        let p = Palette::of(ui);
-        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 150.0), Sense::hover());
-        let painter = ui.painter();
-        widgets::soft_shadow(painter, rect, 22, 1.0, p.dark);
-        let (from, to) = if p.dark {
-            (p.surface.lerp_to_gamma(p.accent, 0.14), p.surface.lerp_to_gamma(p.accent2, 0.12))
-        } else {
-            (p.surface.lerp_to_gamma(p.accent, 0.06), p.surface.lerp_to_gamma(p.accent2, 0.07))
-        };
-        painter.add(widgets::gradient(ui, rect, 22, from, to, vec2(0.9, 0.44)));
-        painter.rect_stroke(rect, 22, Stroke::new(theme::HAIRLINE, p.accent.gamma_multiply(0.28)), StrokeKind::Inside);
-
-        let inner = rect.shrink2(vec2(28.0, 22.0));
-        let left = Rect::from_min_size(inner.min, vec2(300.0, inner.height()));
-        ui.scope_builder(UiBuilder::new().max_rect(left).layout(Layout::top_down(Align::Min)), |ui| {
-            caption(ui, tr!("VITESSE DE TÉLÉCHARGEMENT", "DOWNLOAD SPEED"));
-            ui.add_space(-2.0);
-            let (value, unit) = split_speed(stats.speed);
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
-                ui.label(RichText::new(value).font(theme::bold(40.0)).color(p.text));
-                ui.label(RichText::new(unit).font(theme::semibold(16.0)).color(p.muted));
-            });
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 16.0;
-                stat(ui, &p, icon::ARROW_CIRCLE_DOWN, &crate::i18n::count(stats.running as u64, ("actif", "actifs"), ("active", "active")), p.accent);
-                stat(ui, &p, icon::HOURGLASS, &trf!("{} en attente", "{} waiting", stats.queued), p.muted);
-                if let Some(eta) = (stats.speed > 1.0 && stats.total > stats.done).then(|| ((stats.total - stats.done) as f64 / stats.speed) as u64) {
-                    stat(ui, &p, icon::TIMER, &trf!("reste {}", "{} left", duration(eta)), p.muted);
-                }
-            });
-        });
-
-        let chart = Rect::from_min_max(pos2(left.right() + 30.0, inner.top() + 22.0), inner.max);
-        let history = self.manager.speed_history();
-        let peak = history.iter().copied().fold(0.0f32, f32::max);
-        let painter = ui.painter();
-        painter.text(pos2(chart.left(), inner.top() + 6.0), Align2::LEFT_CENTER, tr!("Dernière minute", "Last minute"), theme::semibold(11.5), p.muted);
-        if peak > 0.0 {
-            painter.text(
-                pos2(chart.right(), inner.top() + 6.0),
-                Align2::RIGHT_CENTER,
-                trf!("pic {}", "peak {}", speed(f64::from(peak))),
-                theme::regular(11.5),
-                p.muted,
-            );
-        }
-        widgets::area_chart(ui, chart, &history);
-        ui.add_space(22.0);
-    }
 }
 
 impl Filter {
@@ -305,19 +182,6 @@ fn section_caption(ui: &mut Ui, text: &str) {
         caption(ui, text);
     });
     ui.add_space(2.0);
-}
-
-/// `12,4` and `Mo/s`, set apart in the dashboard.
-fn split_speed(bytes_per_sec: f64) -> (String, String) {
-    let text = speed(bytes_per_sec);
-    match text.split_once(' ') {
-        Some((value, unit)) => (value.to_owned(), unit.to_owned()),
-        None => (text, String::new()),
-    }
-}
-
-fn stat(ui: &mut Ui, p: &Palette, glyph: &str, text: &str, color: Color32) {
-    widgets::icon_text(ui, glyph, color, text, p.muted, 13.0);
 }
 
 /// A sidebar entry: icon, label, count; the selected one glows with the brand gradient.

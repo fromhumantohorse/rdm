@@ -195,7 +195,7 @@ impl Entry {
         let job = engine::Job {
             url: self.download.url.clone(),
             target: self.download.target.clone(),
-            connections: self.download.connections,
+            connections: self.download.connections(),
             headers: to_header_map(&self.headers),
             audio: self.download.audio.clone(),
             limit: limit.clone(),
