@@ -6,6 +6,7 @@ mod card;
 mod chrome;
 mod dialogs;
 mod edit;
+mod failure;
 mod theme;
 mod toast;
 mod widgets;
@@ -767,20 +768,19 @@ fn open_file(path: PathBuf, manager: &Arc<Manager>) {
 }
 
 #[cfg(windows)]
-fn open_with_default_app(path: &std::path::Path) -> Result<(), String> {
-    opener::open(path).map_err(|e| e.to_string())
+fn open_with_default_app(path: &std::path::Path) -> std::io::Result<()> {
+    opener::open(path).map_err(std::io::Error::other)
 }
 
 #[cfg(not(windows))]
-fn open_with_default_app(path: &std::path::Path) -> Result<(), String> {
+fn open_with_default_app(path: &std::path::Path) -> std::io::Result<()> {
     use std::process::{Command, Stdio};
     match Command::new("xdg-open").arg(path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
-        Ok(mut child) => match child.wait() {
-            Ok(status) if status.success() => Ok(()),
-            Ok(status) => Err(format!("xdg-open: {status}")),
-            Err(e) => Err(e.to_string()),
+        Ok(mut child) => match child.wait()? {
+            status if status.success() => Ok(()),
+            status => Err(std::io::Error::other(format!("xdg-open: {status}"))),
         },
-        Err(_) => opener::open(path).map_err(|e| e.to_string()),
+        Err(_) => opener::open(path).map_err(std::io::Error::other),
     }
 }
 

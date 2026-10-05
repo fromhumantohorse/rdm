@@ -7,7 +7,7 @@ use eframe::egui::{
 use egui_phosphor::regular as icon;
 
 use super::{
-    Action, App, category_icon, edit::Field, queue_name, scan_running,
+    Action, App, category_icon, edit::Field, failure, queue_name, scan_running,
     theme::{self, Palette},
     widgets::{self, bytes, duration, ghost_button, icon_button, kbd, speed},
 };
@@ -245,7 +245,7 @@ fn detail_line(e: &Entry, status: &Status, recording: bool, done: u64, total: u6
     let (got, rate) = (bytes(done), speed(e.speed));
     if let (Status::Queued, Some(retry)) = (status, &e.retry) {
         let left = retry.at.saturating_duration_since(std::time::Instant::now()).as_secs();
-        let reason = &retry.reason;
+        let reason = failure::text(&retry.reason);
         let when = if left == 0 { tr!("maintenant", "now").to_owned() } else { trf!("dans {}", "in {}", duration(left)) };
         return (trf!("{reason} · nouvel essai {when}", "{reason} · retrying {when}", reason = reason, when = when), p.warning);
     }
@@ -274,10 +274,14 @@ fn detail_line(e: &Entry, status: &Status, recording: bool, done: u64, total: u6
         Status::Paused => format!("{got} / {size}"),
         Status::Queued if e.resolving => tr!("analyse du lien auprès du serveur…", "asking the server about the link…").to_owned(),
         Status::Queued => trf!("{got} / {size} · démarre dès qu'une place se libère", "{got} / {size} · starts as soon as a place is free", got = got, size = size),
-        Status::Failed(reason) if recording => {
+        Status::Failed(why) if recording => {
+            let reason = failure::text(why);
             return (trf!("{reason} — relancez l'enregistrement depuis la page", "{reason} — start the recording again from the page", reason = reason), p.danger);
         }
-        Status::Failed(reason) => return (trf!("{reason} — ▶ pour réessayer", "{reason} — ▶ to retry", reason = reason), p.danger),
+        Status::Failed(why) => {
+            let reason = failure::text(why);
+            return (trf!("{reason} — ▶ pour réessayer", "{reason} — ▶ to retry", reason = reason), p.danger);
+        }
     };
     (text, p.muted)
 }

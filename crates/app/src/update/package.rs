@@ -16,39 +16,35 @@ pub struct Verified {
 
 /// Downloads `package` of `version` and checks it (size, SHA-256, format, signature);
 /// `progress` gets the fraction done.
-pub async fn download(client: &reqwest::Client, version: &str, package: &Package, progress: impl Fn(f32)) -> Result<Verified, String> {
+pub async fn download(client: &reqwest::Client, version: &str, package: &Package, progress: impl Fn(f32)) -> Result<Verified, UpdateError> {
     if !trusted(&package.url) {
-        return Err(tr!("adresse de téléchargement inattendue", "unexpected download address").into());
+        return Err(UpdateError::UnexpectedAddress);
     }
-    let Some(sig_url) = package.signature.as_deref().filter(|u| trusted(u)) else {
-        return Err(tr!("mise à jour non signée : installation refusée", "unsigned update: installation refused").into());
-    };
+    let sig_url = package.signature.as_deref().filter(|u| trusted(u)).ok_or(UpdateError::Unsigned)?;
     let signature = fetch_small(client, sig_url).await?;
     let safe: String = version.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-')).collect();
     let extension = package.name.rsplit_once('.').map_or("bin", |(_, e)| e);
     let extension = if package.name.ends_with(".tar.gz") { "tar.gz" } else { extension };
-    let dir = work_dir().map_err(|e| e.to_string())?;
-    let path = dir.join(format!("rdm-update-{safe}.{extension}"));
-    let mut last = String::new();
-    for attempt in 0..DOWNLOAD_ATTEMPTS {
-        if attempt > 0 {
-            tokio::time::sleep(Duration::from_secs(2 << attempt)).await;
-        }
+    let path = work_dir()?.join(format!("rdm-update-{safe}.{extension}"));
+    let mut attempt = 0;
+    loop {
         let result = fetch(client, version, package, &path, &signature, &progress).await;
-        if result.is_err() {
-            let _ = tokio::fs::remove_file(crate::settings::with_suffix(&path, ".tmp")).await;
-        }
         match result {
             Ok(sha256) => return Ok(Verified { path, sha256 }),
-            Err(Fatal(reason)) => return Err(reason),
-            Err(Retry(reason)) => last = reason,
+            Err(e) => {
+                let _ = tokio::fs::remove_file(crate::settings::with_suffix(&path, ".tmp")).await;
+                attempt += 1;
+                if !e.is_retryable() || attempt >= DOWNLOAD_ATTEMPTS {
+                    return Err(e);
+                }
+            }
         }
+        tokio::time::sleep(Duration::from_secs(2 << attempt)).await;
     }
-    Err(last)
 }
 
 /// A small file (a signature), with retries.
-async fn fetch_small(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
+async fn fetch_small(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, UpdateError> {
     for attempt in 0..DOWNLOAD_ATTEMPTS {
         if attempt > 0 {
             tokio::time::sleep(Duration::from_secs(2 << attempt)).await;
@@ -61,75 +57,67 @@ async fn fetch_small(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, Str
             return Ok(bytes.to_vec());
         }
     }
-    Err(tr!("signature de la mise à jour introuvable", "cannot fetch the update's signature").into())
+    Err(UpdateError::SignatureUnavailable)
 }
-
-enum Failure {
-    Retry(String),
-    Fatal(String),
-}
-use Failure::{Fatal, Retry};
 
 /// The package at `path`, checked; its SHA-256.
-async fn fetch(client: &reqwest::Client, version: &str, package: &Package, path: &Path, signature: &[u8], progress: &impl Fn(f32)) -> Result<String, Failure> {
+async fn fetch(client: &reqwest::Client, version: &str, package: &Package, path: &Path, signature: &[u8], progress: &impl Fn(f32)) -> Result<String, UpdateError> {
     use futures_util::StreamExt;
     use sha2::{Digest, Sha256};
     use tokio::io::AsyncWriteExt;
 
-    let unreachable = || Retry(tr!("GitHub est injoignable", "GitHub cannot be reached").into());
-    let res = tokio::time::timeout(STALL, client.get(&package.url).send()).await.map_err(|_| unreachable())?.map_err(|_| unreachable())?;
+    let res = tokio::time::timeout(STALL, client.get(&package.url).send())
+        .await
+        .map_err(|_| UpdateError::Unreachable)?
+        .map_err(|_| UpdateError::Unreachable)?;
     if !res.status().is_success() {
-        let status = res.status().as_u16();
-        let reason = crate::trf!("téléchargement refusé par GitHub ({status})", "download refused by GitHub ({status})", status = status);
-        return Err(if res.status().is_server_error() || status == 429 { Retry(reason) } else { Fatal(reason) });
+        return Err(UpdateError::DownloadRefused(res.status().as_u16()));
     }
-    let too_big = || Fatal(tr!("paquet anormalement gros", "abnormally large package").into());
     let total = if package.size > 0 { package.size } else { res.content_length().unwrap_or(0) };
     if total > MAX_PACKAGE {
-        return Err(too_big());
+        return Err(UpdateError::TooLarge);
     }
     let tmp = crate::settings::with_suffix(path, ".tmp");
-    let io = |e: std::io::Error| Fatal(crate::trf!("écriture impossible : {e}", "cannot write: {e}", e = e));
-    let mut file = tokio::fs::File::create(&tmp).await.map_err(io)?;
+    let mut file = tokio::fs::File::create(&tmp).await?;
     // Streamed to disk: only the first bytes (the format) and the running hash stay in memory.
     let (mut stream, mut head, mut received, mut hash) = (res.bytes_stream(), Vec::with_capacity(16), 0u64, Sha256::new());
     loop {
         let chunk = match tokio::time::timeout(STALL, stream.next()).await {
-            Err(_) => return Err(Retry(tr!("téléchargement bloqué (connexion)", "download stalled (connection)").into())),
+            Err(_) => return Err(UpdateError::Stalled),
             Ok(None) => break,
-            Ok(Some(Err(_))) => return Err(Retry(tr!("téléchargement interrompu", "download interrupted").into())),
+            Ok(Some(Err(_))) => return Err(UpdateError::Interrupted),
             Ok(Some(Ok(chunk))) => chunk,
         };
         received += chunk.len() as u64;
         if received > MAX_PACKAGE {
-            return Err(too_big());
+            return Err(UpdateError::TooLarge);
         }
         if head.len() < 16 {
             head.extend_from_slice(&chunk[..chunk.len().min(16 - head.len())]);
         }
         hash.update(&chunk);
-        file.write_all(&chunk).await.map_err(io)?;
+        file.write_all(&chunk).await?;
         if total > 0 {
             progress((received as f32 / total as f32).min(1.0));
         }
     }
-    file.sync_all().await.map_err(io)?;
+    file.sync_all().await?;
     drop(file);
 
     if total > 0 && received != total {
-        return Err(Retry(tr!("paquet incomplet", "incomplete package").into()));
+        return Err(UpdateError::Incomplete);
     }
     let digest = crate::hex::encode(&hash.finalize());
     if package.sha256.as_ref().is_some_and(|expected| *expected != digest) {
-        return Err(Retry(tr!("paquet corrompu (empreinte SHA-256 différente)", "corrupted package (SHA-256 mismatch)").into()));
+        return Err(UpdateError::Corrupted);
     }
     if !format_matches(&package.name, &head) {
-        return Err(Retry(tr!("le fichier reçu n'est pas le paquet attendu", "the file received is not the expected package").into()));
+        return Err(UpdateError::NotThePackage);
     }
     if !signature_valid(signed_statement(version, &package.name, &digest).as_bytes(), signature) {
-        return Err(Fatal(tr!("signature de la mise à jour invalide : installation refusée", "invalid update signature: installation refused").into()));
+        return Err(UpdateError::BadSignature);
     }
-    tokio::fs::rename(&tmp, path).await.map_err(io)?;
+    tokio::fs::rename(&tmp, path).await?;
     Ok(digest)
 }
 

@@ -13,6 +13,7 @@ mod routes;
 pub use add::{AddRequest, ToConfirm, header_map};
 pub use entry::{Entry, Retry, Scan, ScanRefused, Verify};
 pub use recording::Track;
+pub use routes::RouteError;
 use browsers::FirefoxPairing;
 use entry::{Launch, load_entries, to_header_map};
 use files::{leftovers, mark_from_internet, planned, remove_recording_leftovers, target_for, unique_path};
@@ -29,7 +30,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use domain::{Category, Download, DownloadId, Status};
+use domain::{Category, Download, DownloadId, Failure, Status};
 use engine::{
     CancellationToken, Client, HeaderMap, HeaderValue, Outcome, Progress, RateLimit, header::HeaderName,
 };
@@ -431,7 +432,7 @@ impl Manager {
     /// Removes from the list; `delete_file` also erases the file (always for unfinished parts).
     pub fn remove(self: &Arc<Self>, id: DownloadId, delete_file: bool) {
         if let Some(token) = self.token_of(id) {
-            self.cancel_recording(&token, tr!("annulé", "cancelled"));
+            self.cancel_recording(&token, Failure::RecordingCancelled);
         }
         let removed = {
             let mut entries = lock(&self.entries);
@@ -577,7 +578,7 @@ impl Manager {
                     e.retries = 0;
                 }
                 let _ = match &result {
-                    Err(reason) => e.download.fail(reason.clone()),
+                    Err(RouteError::InvalidProxy) => e.download.fail(Failure::InvalidProxy),
                     Ok(Ok(Outcome::Completed)) => {
                         let _ = e.download.start(); // a pause may have raced the last byte
                         finished = Some(e.name.clone());
@@ -599,11 +600,11 @@ impl Manager {
                         } else {
                             retry_delay(e.retries)
                         };
-                        e.retry = Some(Retry { at: Instant::now() + delay, reason: describe(err) });
+                        e.retry = Some(Retry { at: Instant::now() + delay, reason: failure_of(err) });
                         e.retries += 1;
                         Ok(())
                     }
-                    Ok(Err(err)) => e.download.fail(describe(err)),
+                    Ok(Err(err)) => e.download.fail(failure_of(err)),
                 };
             });
             lock(&this.busy).remove(&id);
@@ -828,43 +829,28 @@ impl Manager {
     }
 }
 
-/// Engine error → a short sentence in the interface language (no URLs: they may carry tokens).
-fn describe(err: &engine::EngineError) -> String {
+/// What an engine error means for the download (never its URL: it may carry tokens).
+fn failure_of(err: &engine::EngineError) -> Failure {
     use engine::EngineError as E;
     match err {
-        E::Http(e) if e.is_redirect() => tr!("redirection refusée (boucle ou vers le réseau local)", "redirect refused (loop, or into the local network)").into(),
-        _ if err.is_certificate() => tr!(
-            "certificat du site non valide (clic droit › Accepter un certificat non valide, si vous faites confiance au site)",
-            "the site's certificate is not valid (right-click › Accept an invalid certificate, if you trust the site)"
-        )
-        .into(),
-        E::Http(e) => match e.status().map(|s| s.as_u16()) {
-            Some(401) => tr!(
-                "identifiants requis (Paramètres › Identifiants des sites)",
-                "login required (Settings › Site logins)"
-            )
-            .into(),
-            Some(403) => tr!("accès refusé par le serveur (lien expiré ou protégé)", "access denied by the server (link expired or protected)").into(),
-            Some(404) => tr!("fichier introuvable (404)", "file not found (404)").into(),
-            Some(410) => tr!("lien expiré (410)", "link expired (410)").into(),
-            Some(429) => tr!("le serveur limite les connexions (429)", "the server limits connections (429)").into(),
-            Some(s @ 500..=599) => trf!("erreur du serveur ({s})", "server error ({s})", s = s),
-            Some(s) => trf!("le serveur a répondu {s}", "the server answered {s}", s = s),
-            None if e.is_timeout() => tr!("délai dépassé, connexion trop lente", "timed out, connection too slow").into(),
-            None if e.is_connect() => tr!("connexion impossible au serveur", "cannot connect to the server").into(),
-            None => tr!("connexion interrompue", "connection interrupted").into(),
+        E::Http(e) if e.is_redirect() => Failure::RedirectRefused,
+        _ if err.is_certificate() => Failure::InvalidCertificate,
+        E::Http(e) => match e.status() {
+            Some(status) => Failure::Status(status.as_u16()),
+            None if e.is_timeout() => Failure::TimedOut,
+            None if e.is_connect() => Failure::CannotConnect,
+            None => Failure::ConnectionInterrupted,
         },
-        E::Io(e) => trf!("erreur disque : {e}", "disk error: {e}", e = e),
-        E::RangeIgnored => tr!("le serveur a renvoyé une plage incohérente", "the server sent an inconsistent range").into(),
-        E::Empty => tr!("le serveur n'a renvoyé aucune donnée (lien expiré ou protégé)", "the server sent no data (link expired or protected)").into(),
-        E::Truncated => tr!("connexion coupée avant la fin", "connection cut before the end").into(),
-        E::Stalled => tr!("connexion interrompue", "connection interrupted").into(),
-        E::LocalNetwork => tr!("bloqué : un contenu Internet visait votre réseau local", "blocked: Internet content pointing into your local network").into(),
-        E::Playlist(m) => trf!("flux vidéo : {m}", "video stream: {m}", m = m),
-        E::Mux(e) => trf!("fusion audio/vidéo impossible : {e}", "cannot merge audio and video: {e}", e = e),
+        E::Io(e) => Failure::Disk(e.to_string()),
+        E::RangeIgnored => Failure::InconsistentRange,
+        E::Empty => Failure::NoData,
+        E::Truncated => Failure::CutBeforeTheEnd,
+        E::Stalled => Failure::ConnectionInterrupted,
+        E::LocalNetwork => Failure::LocalNetwork,
+        E::Playlist(e) => Failure::Stream(e.to_string()),
+        E::Mux(e) => Failure::Merge(e.to_string()),
     }
 }
-
 
 /// Seconds since 1970 (what the files of the settings folder record).
 pub(crate) fn unix_now() -> u64 {

@@ -1,10 +1,12 @@
 //! Pure domain model: no I/O, no async.
 
 mod download;
+mod failure;
 mod file_kind;
 mod segment;
 
 pub use download::{Download, DownloadError, DownloadId, Source, Status};
+pub use failure::Failure;
 pub use file_kind::{Category, default_captured, is_capturable};
 pub use segment::{Segment, plan_segments};
 

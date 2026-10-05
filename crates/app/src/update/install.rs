@@ -21,19 +21,22 @@ pub fn installed_exe() -> Option<PathBuf> {
 
 /// Windows: starts the installation assistant for `msi` (see the module docs). The caller quits
 /// right after.
-pub fn start_installation(msi: &Verified) -> std::io::Result<()> {
-    let target = installed_exe().ok_or(std::io::ErrorKind::Unsupported)?;
+pub fn start_installation(msi: &Verified) -> Result<(), UpdateError> {
+    let target = installed_exe().ok_or(UpdateError::NotHere)?;
     let helper = std::env::temp_dir().join(format!("rdm-updater-{}.exe", std::process::id()));
-    std::fs::copy(startup_exe().map_or_else(std::env::current_exe, |p| Ok(p.to_path_buf()))?, &helper)?;
-    let mut command = std::process::Command::new(&helper);
-    command.arg(HELPER_FLAG).arg(&msi.path).arg(std::process::id().to_string()).arg(&target).arg(&msi.sha256);
-    imp::spawn_outliving(&mut command)
+    let start = || {
+        std::fs::copy(startup_exe().map_or_else(std::env::current_exe, |p| Ok(p.to_path_buf()))?, &helper)?;
+        let mut command = std::process::Command::new(&helper);
+        command.arg(HELPER_FLAG).arg(&msi.path).arg(std::process::id().to_string()).arg(&target).arg(&msi.sha256);
+        imp::spawn_outliving(&mut command)
+    };
+    start().map_err(UpdateError::CannotStart)
 }
 
 /// Linux: installs the downloaded package (binary replaced in place, or the package manager behind
 /// the system's password prompt). RDM restarts afterwards.
-pub async fn install_linux(package: Verified) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || linux::install(method(), &package)).await.map_err(|e| e.to_string())?
+pub async fn install_linux(package: Verified) -> Result<(), UpdateError> {
+    tokio::task::spawn_blocking(move || linux::install(method(), &package)).await.map_err(|_| UpdateError::InstallationInterrupted)?
 }
 
 /// Whether the file at `path` is still the package that was verified (its SHA-256 `expected`).
@@ -100,10 +103,9 @@ pub fn clean_leftovers() {
 mod linux {
     use std::{os::unix::fs::PermissionsExt, process::Command};
 
-    use super::{Method, Verified, startup_exe, unchanged, which};
-    use crate::{tr, trf};
+    use super::{Method, UpdateError, Verified, startup_exe, unchanged, which};
 
-    pub fn install(method: Method, package: &Verified) -> Result<(), String> {
+    pub fn install(method: Method, package: &Verified) -> Result<(), UpdateError> {
         match method {
             Method::Binary => replace_binary(package),
             Method::Deb => {
@@ -120,7 +122,7 @@ mod linux {
                 };
                 elevated(&tool, package)
             }
-            Method::Msi | Method::Manual => Err(tr!("mise à jour impossible ici", "cannot update this copy").into()),
+            Method::Msi | Method::Manual => Err(UpdateError::NotHere),
         }
     }
 
@@ -140,46 +142,47 @@ shift 2
 "#;
 
     /// The package manager, as root after the system's password prompt (polkit).
-    fn elevated(tool: &[&str], package: &Verified) -> Result<(), String> {
+    fn elevated(tool: &[&str], package: &Verified) -> Result<(), UpdateError> {
         let status = Command::new("pkexec")
             .args(["/bin/sh", "-c", AS_ROOT, "sh"])
             .arg(&package.path)
             .arg(&package.sha256)
             .args(tool)
             .status()
-            .map_err(|e| e.to_string())?;
+            .map_err(UpdateError::CannotStart)?;
         match status.code() {
             Some(0) => Ok(()),
-            Some(3) => Err(tr!("le paquet a été modifié après sa vérification : installation refusée", "the package changed after it was verified: installation refused").into()),
-            Some(126 | 127) => Err(tr!("mot de passe refusé ou demande fermée", "password refused or prompt closed").into()),
-            Some(c) => Err(trf!("le gestionnaire de paquets a échoué (code {c})", "the package manager failed (code {c})", c = c)),
-            None => Err(tr!("installation interrompue", "installation interrupted").into()),
+            Some(3) => Err(UpdateError::ChangedAfterVerification),
+            Some(126 | 127) => Err(UpdateError::PasswordRefused),
+            Some(c) => Err(UpdateError::PackageManagerFailed(c)),
+            None => Err(UpdateError::InstallationInterrupted),
         }
     }
 
     /// Unpacks the tarball and swaps the binary in place (a rename: the running process keeps its
     /// file until it exits, and a crash half-way leaves the old binary intact).
-    fn replace_binary(package: &Verified) -> Result<(), String> {
+    fn replace_binary(package: &Verified) -> Result<(), UpdateError> {
         // Everything here runs as the user: checked again all the same, just before use.
         if !unchanged(&package.path, &package.sha256) {
-            return Err(tr!("le paquet a été modifié après sa vérification : installation refusée", "the package changed after it was verified: installation refused").into());
+            return Err(UpdateError::ChangedAfterVerification);
         }
         let archive = package.path.as_path();
-        let exe = startup_exe().ok_or_else(|| tr!("emplacement de RDM inconnu", "RDM's location is unknown").to_owned())?;
-        let work = super::work_dir().map_err(|e| e.to_string())?.join(format!("rdm-update-{}", std::process::id()));
+        let exe = startup_exe().ok_or(UpdateError::UnknownLocation)?;
+        let work = super::work_dir()?.join(format!("rdm-update-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&work);
-        std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&work)?;
         let result = (|| {
             let ok = Command::new("tar").arg("-xzf").arg(archive).arg("-C").arg(&work).status().is_ok_and(|s| s.success());
             let new = work.join("rdm-linux-x64").join("rdm");
             let elf = std::fs::read(&new).is_ok_and(|b| b.starts_with(b"\x7fELF"));
             if !ok || !elf {
-                return Err(tr!("archive de mise à jour illisible", "unreadable update archive").to_owned());
+                return Err(UpdateError::UnreadableArchive);
             }
             let staged = exe.with_file_name(".rdm-update");
-            std::fs::copy(&new, &staged).map_err(|e| e.to_string())?;
-            std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
-            std::fs::rename(&staged, exe).map_err(|e| e.to_string())
+            std::fs::copy(&new, &staged)?;
+            std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755))?;
+            std::fs::rename(&staged, exe)?;
+            Ok(())
         })();
         let _ = std::fs::remove_dir_all(&work);
         result
@@ -188,10 +191,10 @@ shift 2
 
 #[cfg(not(target_os = "linux"))]
 mod linux {
-    use super::{Method, Verified};
+    use super::{Method, UpdateError, Verified};
 
-    pub fn install(_: Method, _: &Verified) -> Result<(), String> {
-        Err(crate::tr!("mise à jour impossible ici", "cannot update this copy").into())
+    pub fn install(_: Method, _: &Verified) -> Result<(), UpdateError> {
+        Err(UpdateError::NotHere)
     }
 }
 

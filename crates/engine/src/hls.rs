@@ -43,6 +43,41 @@ const RESERVE_MAX: u64 = 16 << 20;
 /// Resume state written this often while downloading (data synced first).
 const CHECKPOINT: Duration = Duration::from_secs(20);
 
+/// Why an HLS stream cannot be downloaded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum PlaylistError {
+    #[error("not an m3u8 playlist")]
+    NotAPlaylist,
+    #[error("nested master playlist")]
+    NestedMaster,
+    #[error("empty master playlist")]
+    EmptyMaster,
+    #[error("separate MPEG-TS audio track is not supported")]
+    SeparateTsAudio,
+    #[error("empty playlist")]
+    Empty,
+    #[error("too many segments")]
+    TooManySegments,
+    #[error("bad segment url")]
+    BadSegmentUrl,
+    #[error("bad byte range")]
+    BadByteRange,
+    #[error("byte range without offset")]
+    ByteRangeWithoutOffset,
+    #[error("key without uri")]
+    KeyWithoutUri,
+    #[error("map without uri")]
+    MapWithoutUri,
+    #[error("DRM-protected stream")]
+    Drm,
+    #[error("invalid AES key")]
+    InvalidKey,
+    #[error("decryption failed")]
+    DecryptionFailed,
+    #[error("too large")]
+    TooLarge,
+}
+
 pub(crate) fn is_playlist(url: &Url, content_type: Option<&str>) -> bool {
     url.path().to_ascii_lowercase().ends_with(".m3u8")
         || content_type.is_some_and(|t| t.to_ascii_lowercase().contains("mpegurl"))
@@ -214,7 +249,7 @@ pub(crate) async fn run(
             playlist = load(&http, &audio) => playlist?,
         };
         let Playlist::Media { parts, .. } = playlist else {
-            return Err(EngineError::Playlist("nested master playlist"));
+            return Err(PlaylistError::NestedMaster.into());
         };
         download(&http, parts, &split.audio, (n / 4).max(1), &split.progress[1], &split.stop).await
     });
@@ -229,18 +264,18 @@ async fn choose(http: &Http<'_>, variants: &[Variant]) -> Result<(Vec<Part>, Opt
         async move {
             match load(http, &url).await? {
                 Playlist::Media { parts, fmp4 } => Ok((parts, fmp4)),
-                Playlist::Master(_) => Err(EngineError::Playlist("nested master playlist")),
+                Playlist::Master(_) => Err(EngineError::from(PlaylistError::NestedMaster)),
             }
         }
     };
-    let best = variants.first().ok_or(EngineError::Playlist("empty master playlist"))?;
+    let best = variants.first().ok_or(PlaylistError::EmptyMaster)?;
     let (parts, fmp4) = media(best).await?;
     match &best.audio {
         None => Ok((parts, None)),
         Some(audio) if fmp4 => Ok((parts, Some(audio.clone()))),
         Some(_) => match variants.iter().find(|v| v.audio.is_none()) {
             Some(muxed) => Ok((media(muxed).await?.0, None)),
-            None => Err(EngineError::Playlist("separate MPEG-TS audio track is not supported")),
+            None => Err(PlaylistError::SeparateTsAudio.into()),
         },
     }
 }
@@ -348,7 +383,7 @@ async fn load(http: &Http<'_>, url: &Url) -> Result<Playlist, EngineError> {
 
 fn parse(base: &Url, text: &str) -> Result<Playlist, EngineError> {
     if !text.trim_start_matches('\u{feff}').trim_start().starts_with("#EXTM3U") {
-        return Err(EngineError::Playlist("not an m3u8 playlist"));
+        return Err(PlaylistError::NotAPlaylist.into());
     }
     if text.contains("#EXT-X-STREAM-INF") {
         return Ok(Playlist::Master(parse_master(base, text)));
@@ -400,7 +435,7 @@ fn parse_master(base: &Url, text: &str) -> Vec<Variant> {
 }
 
 fn parse_media(base: &Url, text: &str) -> Result<Vec<Part>, EngineError> {
-    let join = |u: &str| base.join(u).map_err(|_| EngineError::Playlist("bad segment url"));
+    let join = |u: &str| base.join(u).map_err(|_| PlaylistError::BadSegmentUrl);
     let (mut parts, mut key, mut seq) = (Vec::new(), None, 0u64);
     // `EXT-X-BYTERANGE` without `@offset` continues right after the previous range of the same resource.
     let mut pending_range: Option<(u64, Option<u64>)> = None;
@@ -409,23 +444,23 @@ fn parse_media(base: &Url, text: &str) -> Result<Vec<Part>, EngineError> {
         if let Some(v) = line.strip_prefix("#EXT-X-MEDIA-SEQUENCE:") {
             seq = v.trim().parse().unwrap_or(0);
         } else if let Some(v) = line.strip_prefix("#EXT-X-BYTERANGE:") {
-            pending_range = Some(parse_byterange(v).ok_or(EngineError::Playlist("bad byte range"))?);
+            pending_range = Some(parse_byterange(v).ok_or(PlaylistError::BadByteRange)?);
         } else if let Some(a) = line.strip_prefix("#EXT-X-KEY:") {
             key = match attr(a, "METHOD") {
                 Some("NONE") => None,
                 Some("AES-128") => Some(Key {
-                    url: join(attr(a, "URI").ok_or(EngineError::Playlist("key without uri"))?)?,
+                    url: join(attr(a, "URI").ok_or(PlaylistError::KeyWithoutUri)?)?,
                     iv: attr(a, "IV").and_then(parse_iv),
                 }),
-                _ => return Err(EngineError::Playlist("DRM-protected stream")),
+                _ => return Err(PlaylistError::Drm.into()),
             };
         } else if let Some(a) = line.strip_prefix("#EXT-X-MAP:") {
-            let uri = attr(a, "URI").ok_or(EngineError::Playlist("map without uri"))?;
+            let uri = attr(a, "URI").ok_or(PlaylistError::MapWithoutUri)?;
             let range = match attr(a, "BYTERANGE") {
                 Some(r) => {
-                    let (len, offset) = parse_byterange(r).ok_or(EngineError::Playlist("bad byte range"))?;
+                    let (len, offset) = parse_byterange(r).ok_or(PlaylistError::BadByteRange)?;
                     let offset = offset.unwrap_or(0);
-                    offset.checked_add(len).ok_or(EngineError::Playlist("bad byte range"))?;
+                    offset.checked_add(len).ok_or(PlaylistError::BadByteRange)?;
                     Some((offset, len))
                 }
                 None => None,
@@ -439,9 +474,9 @@ fn parse_media(base: &Url, text: &str) -> Result<Vec<Part>, EngineError> {
                     let offset = match (offset, &last_end) {
                         (Some(o), _) => o,
                         (None, Some((prev, end))) if *prev == url => *end,
-                        (None, _) => return Err(EngineError::Playlist("byte range without offset")),
+                        (None, _) => return Err(PlaylistError::ByteRangeWithoutOffset.into()),
                     };
-                    let end = offset.checked_add(len).ok_or(EngineError::Playlist("bad byte range"))?;
+                    let end = offset.checked_add(len).ok_or(PlaylistError::BadByteRange)?;
                     last_end = Some((url.clone(), end));
                     Some((offset, len))
                 }
@@ -450,11 +485,11 @@ fn parse_media(base: &Url, text: &str) -> Result<Vec<Part>, EngineError> {
             seq = seq.wrapping_add(1);
         }
         if parts.len() > MAX_PARTS {
-            return Err(EngineError::Playlist("too many segments"));
+            return Err(PlaylistError::TooManySegments.into());
         }
     }
     if parts.is_empty() {
-        return Err(EngineError::Playlist("empty playlist"));
+        return Err(PlaylistError::Empty.into());
     }
     Ok(parts)
 }
@@ -493,9 +528,9 @@ async fn fetch_part<'b>(http: &Http<'_>, part: Part, budget: (&'b Budget, usize)
 /// AES-128-CBC with PKCS#7 padding, as HLS encrypts segments (`EXT-X-KEY:METHOD=AES-128`).
 fn decrypt(key: &[u8], iv: &[u8; 16], data: &[u8]) -> Result<Vec<u8>, EngineError> {
     cbc::Decryptor::<aes::Aes128>::new_from_slices(key, iv)
-        .map_err(|_| EngineError::Playlist("invalid AES key"))?
+        .map_err(|_| PlaylistError::InvalidKey)?
         .decrypt_padded_vec::<Pkcs7>(data)
-        .map_err(|_| EngineError::Playlist("decryption failed"))
+        .map_err(|_| PlaylistError::DecryptionFailed.into())
 }
 
 /// GET with retries, an optional (offset, length) byte range and a hard size cap. A segment's
@@ -535,7 +570,7 @@ async fn get_once<'b>(
     let headers = net::headers_for(http.headers, http.origin, url).into_owned();
     let mut req = http.client.get(url.clone()).headers(headers);
     if let Some((offset, len)) = range {
-        let last = offset.checked_add(len - 1).ok_or(EngineError::Playlist("bad byte range"))?;
+        let last = offset.checked_add(len - 1).ok_or(PlaylistError::BadByteRange)?;
         req = req.header(reqwest::header::RANGE, format!("bytes={offset}-{last}"));
     }
     let res = req.send().await?.error_for_status()?;
@@ -556,10 +591,10 @@ async fn get_once<'b>(
         None => (0, max),
     };
     if want > max {
-        return Err(if range.is_some() { EngineError::RangeIgnored } else { EngineError::Playlist("too large") });
+        return Err(if range.is_some() { EngineError::RangeIgnored } else { PlaylistError::TooLarge.into() });
     }
     if range.is_none() && res.content_length().is_some_and(|n| n > max) {
-        return Err(EngineError::Playlist("too large"));
+        return Err(PlaylistError::TooLarge.into());
     }
 
     // Room for the announced size at once: grown by doubling, a segment would take up to twice
@@ -581,7 +616,7 @@ async fn get_once<'b>(
             break; // got the slice: the rest (if any) is not ours
         }
         if read > want {
-            return Err(EngineError::Playlist("too large"));
+            return Err(PlaylistError::TooLarge.into());
         }
     }
     let Some((_, len)) = range else { return Ok((body, held)) };
@@ -743,8 +778,8 @@ mod tests {
     fn a_wrong_key_or_a_short_key_is_an_error_not_garbage() {
         let segment = [0u8; 32];
 
-        assert!(matches!(decrypt(&[0x42; 16], &[0; 16], &segment), Err(EngineError::Playlist("decryption failed"))));
-        assert!(matches!(decrypt(&[0x42; 8], &[0; 16], &segment), Err(EngineError::Playlist("invalid AES key"))));
+        assert!(matches!(decrypt(&[0x42; 16], &[0; 16], &segment), Err(EngineError::Playlist(PlaylistError::DecryptionFailed))));
+        assert!(matches!(decrypt(&[0x42; 8], &[0; 16], &segment), Err(EngineError::Playlist(PlaylistError::InvalidKey))));
     }
 
     #[test]
@@ -760,7 +795,7 @@ mod tests {
     fn refuses_endless_playlists() {
         let mut text = String::from("#EXTM3U\n");
         text.push_str(&"#EXTINF:1,\na.ts\n".repeat(MAX_PARTS + 1));
-        assert!(matches!(parse(&base(), &text), Err(EngineError::Playlist("too many segments"))));
+        assert!(matches!(parse(&base(), &text), Err(EngineError::Playlist(PlaylistError::TooManySegments))));
     }
 
     #[test]

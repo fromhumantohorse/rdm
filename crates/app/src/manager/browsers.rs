@@ -249,7 +249,7 @@ impl Manager {
         self.rt.spawn(async move {
             let state = match this.install(browser).await {
                 Ok(done) => Install::Done(done),
-                Err(reason) => Install::Failed(reason),
+                Err(e) => Install::Failed(trf!("impossible d'écrire l'extension : {e}", "cannot write the extension: {e}", e = e)),
             };
             if matches!(&state, Install::Done(done) if done.launched) {
                 lock(&this.opened_to_install).insert(browser.key().to_owned(), Instant::now());
@@ -259,22 +259,18 @@ impl Manager {
         });
     }
 
-    pub(super) async fn install(&self, browser: Browser) -> Result<Installed, String> {
+    pub(super) async fn install(&self, browser: Browser) -> std::io::Result<Installed> {
         let flavour = browser.flavour();
-        let blocking = |e: tokio::task::JoinError| e.to_string();
-        let exe = tokio::task::spawn_blocking(move || browser.find()).await.map_err(blocking)?;
+        let exe = tokio::task::spawn_blocking(move || browser.find()).await?;
         // The connector too (a browser installed since RDM started has not got it yet).
         let _ = tokio::task::spawn_blocking(crate::native::register).await;
-        let folder = tokio::task::spawn_blocking(move || extension::write(flavour))
-            .await
-            .map_err(blocking)?
-            .map_err(|e| trf!("impossible d'écrire l'extension : {e}", "cannot write the extension: {e}", e = e))?;
+        let folder = tokio::task::spawn_blocking(move || extension::write(flavour)).await??;
         let mut done = Installed { folder, launched: false, signed: false, xpi: None };
         let open = |target: &str| exe.as_deref().is_some_and(|exe| extension::launch(exe, target).is_ok());
         if flavour == Flavour::Firefox {
-            done.xpi = tokio::task::spawn_blocking(extension::write_xpi).await.map_err(blocking)?.ok();
+            done.xpi = tokio::task::spawn_blocking(extension::write_xpi).await?.ok();
             let signed = extension::base().join("rdm-firefox-signed.xpi");
-            if let Some(client) = self.web()
+            if let Ok(client) = self.web()
                 && update::signed_firefox_xpi(&client, &signed).await.unwrap_or(false)
             {
                 done.signed = true;

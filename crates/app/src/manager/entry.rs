@@ -61,7 +61,7 @@ pub enum Verify {
 #[derive(Debug, Clone)]
 pub struct Retry {
     pub at: Instant,
-    pub reason: String,
+    pub reason: Failure,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -70,7 +70,7 @@ pub enum Scan {
     None,
     Running(Stage),
     Done(Report),
-    Failed(String),
+    Failed(virustotal::Error),
 }
 
 /// Why a VirusTotal analysis cannot start.
@@ -255,7 +255,7 @@ fn restore(saved: serde_json::Value) -> Option<Entry> {
     // resume point; a recording cannot continue without its browser tab.
     if *s.download.status() == Status::Running {
         let _ = if s.download.is_recording() {
-            s.download.fail(tr!("enregistrement interrompu (RDM fermé)", "recording interrupted (RDM closed)"))
+            s.download.fail(Failure::RecordingInterrupted)
         } else {
             s.download.retry_later()
         };

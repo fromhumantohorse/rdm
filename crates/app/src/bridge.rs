@@ -314,7 +314,7 @@ async fn youtube_state(State(manager): State<Arc<Manager>>, headers: HeaderMap) 
 /// Starts the module's installation (a few minutes; the extension asks `/youtube/state` later).
 async fn youtube_install(State(manager): State<Arc<Manager>>, headers: HeaderMap) -> Result<Json<crate::ytdlp::State>, StatusCode> {
     guard(&manager, &headers)?;
-    crate::ytdlp::install(&tokio::runtime::Handle::current());
+    manager.install_youtube_module();
     Ok(Json(crate::ytdlp::state()))
 }
 
@@ -338,9 +338,9 @@ async fn youtube_extract(State(manager): State<Arc<Manager>>, headers: HeaderMap
     if crate::ytdlp::state() != crate::ytdlp::State::Ready {
         return Err(StatusCode::CONFLICT);
     }
-    Ok(Json(match crate::ytdlp::extract(&v.id).await {
+    Ok(Json(match manager.youtube_links(&v.id).await {
         Ok(formats) => Extracted::Formats(formats),
-        Err(error) => Extracted::Refused { error },
+        Err(e) => Extracted::Refused { error: e.to_string() },
     }))
 }
 
@@ -425,7 +425,7 @@ async fn record_cancel(State(manager): State<Arc<Manager>>, headers: HeaderMap, 
     if let Err(status) = guard(&manager, &headers) {
         return status;
     }
-    if manager.cancel_recording(&token, crate::tr!("enregistrement annulé", "recording cancelled")) { StatusCode::NO_CONTENT } else { StatusCode::NOT_FOUND }
+    if manager.cancel_recording(&token, domain::Failure::RecordingCancelled) { StatusCode::NO_CONTENT } else { StatusCode::NOT_FOUND }
 }
 
 #[derive(Deserialize)]

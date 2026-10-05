@@ -47,7 +47,7 @@ pub fn checksum_mismatch(file_name: &str) {
     show(crate::tr!("Empreinte différente : fichier corrompu ?", "Checksum mismatch: corrupted file?"), file_name);
 }
 
-pub fn virustotal(file_name: &str, verdict: Result<&Report, String>) {
+pub fn virustotal(file_name: &str, verdict: Result<&Report, &crate::virustotal::Error>) {
     let (flagged, engines) = verdict.as_ref().map_or((0, 0), |r| (r.flagged(), r.engines()));
     let summary = match &verdict {
         Ok(r) if r.flagged() == 0 => crate::trf!("VirusTotal : aucune menace ({flagged}/{engines})", "VirusTotal: no threat ({flagged}/{engines})", engines = engines, flagged = flagged),

@@ -1,22 +1,22 @@
-//! Online services: update checks and VirusTotal scans.
+//! Online services: update checks, VirusTotal scans and the YouTube module.
 
 use super::*;
 
 impl Manager {
     /// Client for VirusTotal and GitHub (not the download engine's: see `virustotal::client`),
-    /// through the proxy of the settings like downloads; rebuilt when that changes. `None` for an
+    /// through the proxy of the settings like downloads; rebuilt when that changes. Refused for an
     /// unusable proxy address: never around the proxy the user counts on.
-    pub(super) fn web(&self) -> Option<reqwest::Client> {
+    pub(super) fn web(&self) -> Result<reqwest::Client, RouteError> {
         let route = self.route(false);
         let mut web = lock(&self.web);
         if let Some((built_for, client)) = web.as_ref()
             && *built_for == route
         {
-            return Some(client.clone());
+            return Ok(client.clone());
         }
-        let client = virustotal::client(&route).ok()?;
+        let client = virustotal::client(&route).map_err(|_| RouteError::InvalidProxy)?;
         *web = Some((route, client.clone()));
-        Some(client)
+        Ok(client)
     }
 
     pub fn update_state(&self) -> update::State {
@@ -86,12 +86,16 @@ impl Manager {
         }
         let this = self.clone();
         self.rt.spawn(async move {
-            let Some(client) = this.web() else { return };
-            let state = match update::check(&client).await {
+            let found = match this.web() {
+                Ok(client) => update::check(&client).await.map_err(|e| e.to_string()),
+                Err(e) => Err(e.to_string()),
+            };
+            let state = match found {
                 Ok(Some(release)) => update::State::Available(release),
                 Ok(None) if manual => update::State::UpToDate,
+                Ok(None) => update::State::Idle,
                 Err(reason) if manual => update::State::Failed(reason),
-                _ => update::State::Idle,
+                Err(_) => return,
             };
             this.set_update(state);
         });
@@ -109,8 +113,9 @@ impl Manager {
         self.rt.spawn(async move {
             // The update stays on offer: the card lets the user try again.
             let fail = |reason: String| this.set_update(update::State::InstallFailed(release.clone(), reason));
-            let Some(client) = this.web() else {
-                return fail(tr!("client HTTP indisponible", "HTTP client unavailable").into());
+            let client = match this.web() {
+                Ok(client) => client,
+                Err(e) => return fail(e.to_string()),
             };
             let progress = {
                 let this = this.clone();
@@ -127,7 +132,7 @@ impl Manager {
             };
             let file = match update::download(&client, &release.version, &package, progress).await {
                 Ok(file) => file,
-                Err(reason) => return fail(reason),
+                Err(e) => return fail(e.to_string()),
             };
             this.set_update(update::State::Installing);
             if update::method() == update::Method::Msi {
@@ -136,10 +141,10 @@ impl Manager {
                     move || update::start_installation(&file)
                 })
                 .await
-                .unwrap_or_else(|e| Err(std::io::Error::other(e)));
+                .unwrap_or_else(|e| Err(update::UpdateError::CannotStart(std::io::Error::other(e))));
                 match started {
                     Ok(()) => this.request_quit(),
-                    Err(e) => fail(trf!("impossible de lancer l'installation : {e}", "cannot start the installation: {e}", e = e)),
+                    Err(e) => fail(e.to_string()),
                 }
                 return;
             }
@@ -150,10 +155,21 @@ impl Manager {
                     this.restart_after_exit.store(true, Release);
                     this.request_quit();
                 }
-                Err(reason) => fail(reason),
+                Err(e) => fail(e.to_string()),
             }
         });
         true
+    }
+
+    /// Installs the YouTube module (see `ytdlp`) the way downloads reach the Internet.
+    pub fn install_youtube_module(&self) {
+        crate::ytdlp::install(&self.rt, self.route(false));
+    }
+
+    /// The links of YouTube video `id`, read by the YouTube module on the route their download
+    /// takes: YouTube binds them to the address that reads them.
+    pub async fn youtube_links(&self, id: &str) -> Result<crate::ytdlp::Formats, crate::ytdlp::ModuleError> {
+        crate::ytdlp::extract(id, &self.route(false)).await
     }
 
     /// Has VirusTotal analyse a finished file (looked up by hash first, uploaded only if unknown),
@@ -196,15 +212,15 @@ impl Manager {
                         hash
                     }
                 };
-                let client = this.web().ok_or(virustotal::Error::Network)?;
+                let client = this.web().map_err(|_| virustotal::Error::Network)?;
                 virustotal::scan(&client, &key, &path, &sha256, stage).await
             }
             .await;
-            notify::virustotal(&name, result.as_ref().map_err(ToString::to_string));
+            notify::virustotal(&name, result.as_ref());
             this.update(id, |e| {
                 e.scan = match result {
                     Ok(report) => Scan::Done(report),
-                    Err(err) => Scan::Failed(err.to_string()),
+                    Err(err) => Scan::Failed(err),
                 };
             });
         });

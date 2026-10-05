@@ -107,6 +107,8 @@ impl std::fmt::Display for Error {
     }
 }
 
+impl std::error::Error for Error {}
+
 /// A separate client from the download engine's (also used for GitHub): uploads can take long (no
 /// read timeout), and HTTP/2 is fine here. Same route as downloads (the proxy of the settings).
 pub fn client(route: &engine::Route) -> reqwest::Result<Client> {

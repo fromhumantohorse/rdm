@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 use uuid::Uuid;
 
+use crate::Failure;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct DownloadId(Uuid);
 
@@ -25,7 +27,7 @@ pub enum Status {
     Running,
     Paused,
     Completed,
-    Failed(String),
+    Failed(#[serde(deserialize_with = "Failure::deserialize_saved")] Failure),
 }
 
 /// How the bytes are obtained.
@@ -40,8 +42,8 @@ pub enum Source {
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum DownloadError {
-    #[error("invalid transition from {from:?} to {to}")]
-    InvalidTransition { from: Status, to: &'static str },
+    #[error("invalid transition from {from:?} to {to:?}")]
+    InvalidTransition { from: Status, to: Status },
 }
 
 /// Aggregate root.
@@ -102,25 +104,21 @@ impl Download {
     }
 
     pub fn start(&mut self) -> Result<(), DownloadError> {
-        self.transition(
-            matches!(self.status, Status::Queued | Status::Paused | Status::Failed(_)),
-            Status::Running,
-            "Running",
-        )
+        self.transition(matches!(self.status, Status::Queued | Status::Paused | Status::Failed(_)), Status::Running)
     }
 
     /// Back into the queue: the scheduler starts it when a slot frees up. Recordings cannot be
     /// re-queued: only the browser can feed them.
     pub fn enqueue(&mut self) -> Result<(), DownloadError> {
         let allowed = !self.is_recording() && matches!(self.status, Status::Paused | Status::Failed(_));
-        self.transition(allowed, Status::Queued, "Queued")
+        self.transition(allowed, Status::Queued)
     }
 
     /// Running → back in the queue after a transient failure (network down, busy server): the
     /// scheduler retries it later. Recordings cannot: only the browser can feed them.
     pub fn retry_later(&mut self) -> Result<(), DownloadError> {
         let allowed = !self.is_recording() && self.status == Status::Running;
-        self.transition(allowed, Status::Queued, "Queued")
+        self.transition(allowed, Status::Queued)
     }
 
     pub fn category(&self) -> crate::Category {
@@ -128,21 +126,20 @@ impl Download {
     }
 
     pub fn pause(&mut self) -> Result<(), DownloadError> {
-        self.transition(matches!(self.status, Status::Running | Status::Queued), Status::Paused, "Paused")
+        self.transition(matches!(self.status, Status::Running | Status::Queued), Status::Paused)
     }
 
     pub fn complete(&mut self) -> Result<(), DownloadError> {
-        self.transition(self.status == Status::Running, Status::Completed, "Completed")
+        self.transition(self.status == Status::Running, Status::Completed)
     }
 
-    pub fn fail(&mut self, reason: impl Into<String>) -> Result<(), DownloadError> {
-        let next = Status::Failed(reason.into());
-        self.transition(self.status == Status::Running, next, "Failed")
+    pub fn fail(&mut self, failure: Failure) -> Result<(), DownloadError> {
+        self.transition(self.status == Status::Running, Status::Failed(failure))
     }
 
-    fn transition(&mut self, allowed: bool, next: Status, to: &'static str) -> Result<(), DownloadError> {
+    fn transition(&mut self, allowed: bool, next: Status) -> Result<(), DownloadError> {
         if !allowed {
-            return Err(DownloadError::InvalidTransition { from: self.status.clone(), to });
+            return Err(DownloadError::InvalidTransition { from: self.status.clone(), to: next });
         }
         self.status = next;
         Ok(())
@@ -173,8 +170,40 @@ mod tests {
         let mut r = Download::recording("https://www.youtube.com/watch?v=x".parse().unwrap(), "v.mp4".into());
         assert!(r.is_recording());
         assert_eq!(r.status(), &Status::Running);
-        r.fail("interrompu").unwrap();
+        r.fail(Failure::RecordingAbandoned).unwrap();
         assert!(r.enqueue().is_err());
+    }
+
+    #[test]
+    fn a_refused_transition_says_from_where_to_where() {
+        let mut d = sample();
+
+        let refused = d.complete();
+
+        assert_eq!(refused, Err(DownloadError::InvalidTransition { from: Status::Queued, to: Status::Completed }));
+    }
+
+    #[test]
+    fn a_failure_is_saved_as_a_fact_and_read_back() {
+        let mut d = sample();
+        d.start().unwrap();
+        d.fail(Failure::Status(404)).unwrap();
+
+        let saved = serde_json::to_string(&d).unwrap();
+        let loaded: Download = serde_json::from_str(&saved).unwrap();
+
+        assert_eq!(loaded.status(), &Status::Failed(Failure::Status(404)));
+    }
+
+    /// RDM 0.3.11 and older saved the reason as a sentence, in the language of the time.
+    #[test]
+    fn a_failure_saved_as_a_sentence_still_loads() {
+        let json = r#"{"id":"67e55044-10b1-426f-9247-bb680e5fe0c8","url":"https://x.io/a.zip","target":"a.zip",
+            "connections":8,"status":{"Failed":"fichier introuvable (404)"}}"#;
+
+        let d: Download = serde_json::from_str(json).unwrap();
+
+        assert_eq!(d.status(), &Status::Failed(Failure::Text("fichier introuvable (404)".into())));
     }
 
     #[test]
@@ -200,7 +229,7 @@ mod tests {
     fn failed_can_be_requeued() {
         let mut d = sample();
         d.start().unwrap();
-        d.fail("boom").unwrap();
+        d.fail(Failure::NoData).unwrap();
         d.enqueue().unwrap();
         assert_eq!(d.status(), &Status::Queued);
     }

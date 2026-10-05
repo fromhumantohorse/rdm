@@ -3073,6 +3073,7 @@ dependencies = [
  "sha1",
  "sha2",
  "sys-locale",
+ "thiserror 2.0.21",
  "tokio",
  "tokio-util",
  "tray-icon",

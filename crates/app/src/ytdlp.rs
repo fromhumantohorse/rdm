@@ -86,6 +86,68 @@ pub enum State {
     Failed(String),
 }
 
+/// Why installing or running the module failed, in English: shown as is in the extension.
+#[derive(Debug, thiserror::Error)]
+pub enum ModuleError {
+    #[error("no user data folder")]
+    NoDataFolder,
+    #[error("installation took too long")]
+    SetupTooLong,
+    #[error("cannot create the folder: {0}")]
+    CreateFolder(#[source] std::io::Error),
+    #[error("{0}")]
+    Client(#[source] reqwest::Error),
+    #[error("{0}")]
+    Task(#[from] tokio::task::JoinError),
+    #[error("cannot write: {0}")]
+    Write(#[from] std::io::Error),
+    #[error("cannot write (is it running?): {0}")]
+    Replace(#[source] std::io::Error),
+    #[error("GitHub ({repo}): {source}")]
+    GitHub { repo: &'static str, source: reqwest::Error },
+    #[error("GitHub ({repo}): {source}")]
+    GitHubAnswer { repo: &'static str, source: serde_json::Error },
+    #[error("{0} not found in yt-dlp's release")]
+    MissingAsset(String),
+    #[error("{0}: unexpected address")]
+    UnexpectedAddress(String),
+    #[error("yt-dlp: the checksum list is not signed by yt-dlp's key: refused")]
+    Unsigned,
+    #[error("{}: not in yt-dlp's signed checksums", YTDLP_ASSET)]
+    NotInChecksums,
+    #[error("download failed: {0}")]
+    Download(#[source] reqwest::Error),
+    #[error("file abnormally large")]
+    TooLarge,
+    #[error("corrupted download (SHA-256 mismatch): {0}")]
+    Corrupted(String),
+    #[error("bad archive: {0}")]
+    BadArchive(#[from] zip::result::ZipError),
+    #[error("{name}: {source}")]
+    MissingEntry { name: String, source: zip::result::ZipError },
+    #[error("unsafe path in archive")]
+    UnsafePath,
+    #[error("cannot unpack {}: {stderr}", .dest.display())]
+    Unpack { dest: PathBuf, stderr: String },
+    #[error("bgutil setup failed: {0}")]
+    BgutilSetup(String),
+    #[error("invalid video")]
+    InvalidVideo,
+    #[error("the YouTube module is busy: try again in a moment")]
+    Busy,
+    /// yt-dlp's own error line.
+    #[error("{0}")]
+    Refused(String),
+    #[error("unexpected yt-dlp output: {0}")]
+    UnexpectedOutput(#[source] serde_json::Error),
+    #[error("cannot start the YouTube module: {0}")]
+    CannotStart(#[source] std::io::Error),
+    #[error("{0}")]
+    Wait(#[source] std::io::Error),
+    #[error("the YouTube module took too long")]
+    TooLong,
+}
+
 static INSTALLING: Mutex<Option<State>> = Mutex::new(None);
 
 fn tools_dir() -> Option<PathBuf> {
@@ -117,8 +179,9 @@ pub fn state() -> State {
     }
 }
 
-/// Starts the installation in the background (nothing when one runs or the module is there).
-pub fn install(rt: &tokio::runtime::Handle) {
+/// Starts the installation in the background (nothing when one runs or the module is there),
+/// reaching GitHub by `route`.
+pub fn install(rt: &tokio::runtime::Handle, route: engine::Route) {
     {
         let mut current = INSTALLING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if matches!(*current, Some(State::Installing)) {
@@ -129,16 +192,16 @@ pub fn install(rt: &tokio::runtime::Handle) {
         }
         *current = Some(State::Installing);
     }
-    rt.spawn(async {
-        let setup = async { setup(&tools_dir().ok_or("no user data folder")?).await };
+    rt.spawn(async move {
+        let setup = async { setup(&tools_dir().ok_or(ModuleError::NoDataFolder)?, &route).await };
         let result = match tokio::time::timeout(SETUP_TIMEOUT, setup).await {
             Ok(result) => result,
-            Err(_) => Err("installation took too long".to_owned()),
+            Err(_) => Err(ModuleError::SetupTooLong),
         };
         let mut current = INSTALLING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         *current = match result {
             Ok(()) => None, // `ready` is on disk
-            Err(e) => Some(State::Failed(e)),
+            Err(e) => Some(State::Failed(e.to_string())),
         };
     });
 }
@@ -157,39 +220,39 @@ struct Asset {
 }
 
 /// Installs the module into `dir` (the user's data folder; a scratch folder in tests).
-async fn setup(dir: &Path) -> Result<(), String> {
+async fn setup(dir: &Path, route: &engine::Route) -> Result<(), ModuleError> {
     let p = paths(dir);
-    let io = |what: &str, e: std::io::Error| format!("{what}: {e}");
     let _ = tokio::fs::remove_file(dir.join(READY)).await;
-    tokio::fs::create_dir_all(&p.plugins).await.map_err(|e| io("cannot create the folder", e))?;
-    let client = engine::client().map_err(|e| e.to_string())?;
+    tokio::fs::create_dir_all(&p.plugins).await.map_err(ModuleError::CreateFolder)?;
+    let client = engine::client_with(&engine::ClientOptions { route: route.clone(), ..engine::ClientOptions::default() }).map_err(ModuleError::Client)?;
 
     let ytdlp = signed_ytdlp(&client).await?;
     let path = p.ytdlp.clone();
-    tokio::task::spawn_blocking(move || write_exe(&path, |out| std::io::Write::write_all(out, &ytdlp))).await.map_err(|e| e.to_string())??;
+    tokio::task::spawn_blocking(move || write_exe(&path, |out| std::io::Write::write_all(out, &ytdlp))).await??;
 
     let (name, sha256) = DENO_ASSET;
     let deno = download(&client, &format!("https://github.com/denoland/deno/releases/download/v{DENO_VERSION}/{name}"), Some(sha256)).await?;
     let path = p.deno.clone();
-    tokio::task::spawn_blocking(move || unzip_exe(&deno, &format!("deno{EXE}"), &path)).await.map_err(|e| e.to_string())??;
+    tokio::task::spawn_blocking(move || unzip_exe(&deno, &format!("deno{EXE}"), &path)).await??;
 
     let plugin_url = format!("https://github.com/Brainicism/bgutil-ytdlp-pot-provider/releases/download/{BGUTIL_TAG}/{BGUTIL_PLUGIN}");
     let plugin = download(&client, &plugin_url, Some(BGUTIL_PLUGIN_SHA256)).await?;
-    tokio::fs::write(p.plugins.join(BGUTIL_PLUGIN), &plugin).await.map_err(|e| io("cannot write", e))?;
+    tokio::fs::write(p.plugins.join(BGUTIL_PLUGIN), &plugin).await?;
 
     let source = download(&client, BGUTIL_SOURCE_URL, Some(BGUTIL_SOURCE_SHA256)).await?;
     let bgutil = dir.join("bgutil");
     let _ = tokio::fs::remove_dir_all(&bgutil).await;
     let target = bgutil.clone();
-    tokio::task::spawn_blocking(move || unzip_stripped(&source, &target)).await.map_err(|e| e.to_string())??;
+    tokio::task::spawn_blocking(move || unzip_stripped(&source, &target)).await??;
 
     // The token generator's own libraries (npm), each checked against bgutil's lock file
     // (`--frozen`); no install script runs.
     let mut command = tokio::process::Command::new(&p.deno);
     command.args(["install", "--frozen"]).current_dir(&p.server);
+    reach_by(&mut command, route);
     let out = run(command, SETUP_TIMEOUT).await?;
     if !out.status.success() {
-        return Err(format!("bgutil setup failed: {}", tail(&out.stderr)));
+        return Err(ModuleError::BgutilSetup(tail(&out.stderr)));
     }
     // What `canvas`'s install script would have downloaded: its library, from its own release.
     let (name, sha256) = CANVAS_ASSET;
@@ -197,27 +260,27 @@ async fn setup(dir: &Path) -> Result<(), String> {
     let library = download(&client, &canvas_url, Some(sha256)).await?;
     unpack_tar_gz(dir, &library, &p.server.join("node_modules").join("canvas")).await?;
     let ready = format!("bgutil {BGUTIL_TAG}\ndeno {DENO_VERSION}\ncanvas {CANVAS_VERSION}\n");
-    tokio::fs::write(dir.join(READY), ready).await.map_err(|e| io("cannot write", e))
+    Ok(tokio::fs::write(dir.join(READY), ready).await?)
 }
 
 /// yt-dlp's latest program, once its release's checksum list carries yt-dlp's signature
 /// ([`SIGNING_KEY`]) and the program matches its line there.
-async fn signed_ytdlp(client: &reqwest::Client) -> Result<Vec<u8>, String> {
+async fn signed_ytdlp(client: &reqwest::Client) -> Result<Vec<u8>, ModuleError> {
     let release = latest_release(client, "yt-dlp/yt-dlp").await?;
     let url_of = |name: &str| {
-        let asset = release.assets.iter().find(|a| a.name == name).ok_or_else(|| format!("{name} not found in yt-dlp's release"))?;
+        let asset = release.assets.iter().find(|a| a.name == name).ok_or_else(|| ModuleError::MissingAsset(name.to_owned()))?;
         if asset.browser_download_url.starts_with("https://github.com/") {
             Ok(asset.browser_download_url.clone())
         } else {
-            Err(format!("{name}: unexpected address"))
+            Err(ModuleError::UnexpectedAddress(name.to_owned()))
         }
     };
     let sums = download(client, &url_of(YTDLP_SUMS)?, None).await?;
     let signature = download(client, &url_of(&format!("{YTDLP_SUMS}.sig"))?, None).await?;
     if !crate::openpgp::verify(&SIGNING_KEY, &sums, &signature) {
-        return Err("yt-dlp: the checksum list is not signed by yt-dlp's key: refused".into());
+        return Err(ModuleError::Unsigned);
     }
-    let sha256 = sum_of(&String::from_utf8_lossy(&sums), YTDLP_ASSET).ok_or_else(|| format!("{YTDLP_ASSET}: not in yt-dlp's signed checksums"))?;
+    let sha256 = sum_of(&String::from_utf8_lossy(&sums), YTDLP_ASSET).ok_or(ModuleError::NotInChecksums)?;
     download(client, &url_of(YTDLP_ASSET)?, Some(&sha256)).await
 }
 
@@ -231,7 +294,7 @@ fn sum_of(list: &str, name: &str) -> Option<String> {
 }
 
 /// The latest release of `repo`, as GitHub's API lists it.
-async fn latest_release(client: &reqwest::Client, repo: &str) -> Result<Release, String> {
+async fn latest_release(client: &reqwest::Client, repo: &'static str) -> Result<Release, ModuleError> {
     let res = client
         .get(format!("https://api.github.com/repos/{repo}/releases/latest"))
         .header("accept", "application/vnd.github+json")
@@ -239,16 +302,16 @@ async fn latest_release(client: &reqwest::Client, repo: &str) -> Result<Release,
         .send()
         .await
         .and_then(reqwest::Response::error_for_status)
-        .map_err(|e| format!("GitHub ({repo}): {e}"))?;
-    let body = res.bytes().await.map_err(|e| format!("GitHub ({repo}): {e}"))?;
-    serde_json::from_slice(&body).map_err(|e| format!("GitHub ({repo}): {e}"))
+        .map_err(|source| ModuleError::GitHub { repo, source })?;
+    let body = res.bytes().await.map_err(|source| ModuleError::GitHub { repo, source })?;
+    serde_json::from_slice(&body).map_err(|source| ModuleError::GitHubAnswer { repo, source })
 }
 
 /// Unpacks a (checked) `.tar.gz` archive into `dest` with the system's `tar` (Windows 10 and
 /// later ship one), through a file in `work`.
-async fn unpack_tar_gz(work: &Path, archive: &[u8], dest: &Path) -> Result<(), String> {
+async fn unpack_tar_gz(work: &Path, archive: &[u8], dest: &Path) -> Result<(), ModuleError> {
     let file = work.join("unpack.tar.gz");
-    tokio::fs::write(&file, archive).await.map_err(|e| format!("cannot write: {e}"))?;
+    tokio::fs::write(&file, archive).await?;
     #[cfg(windows)]
     let tar = std::env::var_os("SystemRoot").map_or_else(|| "tar.exe".into(), |root| Path::new(&root).join(r"System32\tar.exe"));
     #[cfg(not(windows))]
@@ -259,12 +322,12 @@ async fn unpack_tar_gz(work: &Path, archive: &[u8], dest: &Path) -> Result<(), S
     let _ = tokio::fs::remove_file(&file).await;
     match out {
         Ok(out) if out.status.success() => Ok(()),
-        Ok(out) => Err(format!("cannot unpack {}: {}", dest.display(), tail(&out.stderr))),
+        Ok(out) => Err(ModuleError::Unpack { dest: dest.to_path_buf(), stderr: tail(&out.stderr) }),
         Err(e) => Err(e),
     }
 }
 
-async fn download(client: &reqwest::Client, url: &str, sha256: Option<&str>) -> Result<Vec<u8>, String> {
+async fn download(client: &reqwest::Client, url: &str, sha256: Option<&str>) -> Result<Vec<u8>, ModuleError> {
     use sha2::{Digest, Sha256};
     let res = client
         .get(url)
@@ -272,69 +335,69 @@ async fn download(client: &reqwest::Client, url: &str, sha256: Option<&str>) -> 
         .send()
         .await
         .and_then(reqwest::Response::error_for_status)
-        .map_err(|e| format!("download failed: {e}"))?;
+        .map_err(ModuleError::Download)?;
     if res.content_length().is_some_and(|n| n > MAX_FILE) {
-        return Err("file abnormally large".into());
+        return Err(ModuleError::TooLarge);
     }
-    let bytes = res.bytes().await.map_err(|e| format!("download failed: {e}"))?;
+    let bytes = res.bytes().await.map_err(ModuleError::Download)?;
     if bytes.len() as u64 > MAX_FILE {
-        return Err("file abnormally large".into());
+        return Err(ModuleError::TooLarge);
     }
     let digest = crate::hex::encode(&Sha256::digest(&bytes));
     if sha256.is_some_and(|expected| !expected.eq_ignore_ascii_case(&digest)) {
-        return Err(format!("corrupted download (SHA-256 mismatch): {url}"));
+        return Err(ModuleError::Corrupted(url.to_owned()));
     }
     Ok(bytes.to_vec())
 }
 
 /// Writes the program at `path` through a temporary file (`fill` writes its bytes), then puts it
 /// in place: a half-written program is never left under its name.
-fn write_exe(path: &Path, fill: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>) -> Result<(), String> {
+fn write_exe(path: &Path, fill: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>) -> Result<(), ModuleError> {
     let tmp = crate::settings::with_suffix(path, ".tmp");
-    let mut out = std::fs::File::create(&tmp).map_err(|e| format!("cannot write: {e}"))?;
-    fill(&mut out).map_err(|e| format!("cannot write: {e}"))?;
+    let mut out = std::fs::File::create(&tmp)?;
+    fill(&mut out)?;
     drop(out);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
     }
-    std::fs::rename(&tmp, path).map_err(|e| format!("cannot write (is it running?): {e}"))
+    std::fs::rename(&tmp, path).map_err(ModuleError::Replace)
 }
 
-fn archive(data: &[u8]) -> Result<zip::ZipArchive<std::io::Cursor<&[u8]>>, String> {
-    zip::ZipArchive::new(std::io::Cursor::new(data)).map_err(|e| format!("bad archive: {e}"))
+fn archive(data: &[u8]) -> Result<zip::ZipArchive<std::io::Cursor<&[u8]>>, ModuleError> {
+    Ok(zip::ZipArchive::new(std::io::Cursor::new(data))?)
 }
 
 /// The one file named `name` of a zip archive, written as the program `path`: unpacked straight to
 /// disk (Deno's is over 100 MB), never whole in memory.
-fn unzip_exe(data: &[u8], name: &str, path: &Path) -> Result<(), String> {
+fn unzip_exe(data: &[u8], name: &str, path: &Path) -> Result<(), ModuleError> {
     let mut zip = archive(data)?;
-    let mut entry = zip.by_name(name).map_err(|e| format!("{name}: {e}"))?;
+    let mut entry = zip.by_name(name).map_err(|source| ModuleError::MissingEntry { name: name.to_owned(), source })?;
     write_exe(path, |out| std::io::copy(&mut entry, out).map(drop))
 }
 
 /// A GitHub source archive into `dest`, without its top folder (`<repo>-<tag>/`). Paths that
 /// would leave `dest` (`..`, absolute) are refused.
-fn unzip_stripped(data: &[u8], dest: &Path) -> Result<(), String> {
+fn unzip_stripped(data: &[u8], dest: &Path) -> Result<(), ModuleError> {
     let mut zip = archive(data)?;
     for i in 0..zip.len() {
-        let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
-        let Some(inner) = entry.enclosed_name() else { return Err("unsafe path in archive".into()) };
+        let mut entry = zip.by_index(i)?;
+        let Some(inner) = entry.enclosed_name() else { return Err(ModuleError::UnsafePath) };
         let inner: PathBuf = inner.components().skip(1).collect();
         if inner.as_os_str().is_empty() {
             continue;
         }
         let path = dest.join(inner);
         if entry.is_dir() {
-            std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(&path)?;
             continue;
         }
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(parent)?;
         }
-        let mut out = std::fs::File::create(&path).map_err(|e| e.to_string())?;
-        std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
+        let mut out = std::fs::File::create(&path)?;
+        std::io::copy(&mut entry, &mut out)?;
     }
     Ok(())
 }
@@ -369,22 +432,24 @@ pub fn valid_id(id: &str) -> bool {
     id.len() == 11 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-/// The links of video `id` (checked by [`valid_id`]), as yt-dlp resolves them.
-pub async fn extract(id: &str) -> Result<Formats, String> {
-    extract_in(&tools_dir().ok_or("no user data folder")?, id).await
+/// The links of video `id` (checked by [`valid_id`]), as yt-dlp resolves them reaching YouTube by
+/// `route`: the links are bound to the address that reads them, so the download must take the
+/// same route.
+pub async fn extract(id: &str, route: &engine::Route) -> Result<Formats, ModuleError> {
+    extract_in(&tools_dir().ok_or(ModuleError::NoDataFolder)?, id, route).await
 }
 
 /// [`extract`] with the module installed in `dir`.
-async fn extract_in(dir: &Path, id: &str) -> Result<Formats, String> {
+async fn extract_in(dir: &Path, id: &str, route: &engine::Route) -> Result<Formats, ModuleError> {
     if !valid_id(id) {
-        return Err("invalid video".into());
+        return Err(ModuleError::InvalidVideo);
     }
     // yt-dlp and Deno take hundreds of megabytes each: a menu opened again and again must not
     // start them by the dozen.
     static RUNNING: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(MAX_EXTRACTIONS);
     let _turn = match tokio::time::timeout(WAIT_TURN, RUNNING.acquire()).await {
         Ok(Ok(permit)) => permit,
-        _ => return Err("the YouTube module is busy: try again in a moment".into()),
+        _ => return Err(ModuleError::Busy),
     };
     let p = paths(dir);
     let mut jsrt = p.deno.into_os_string();
@@ -398,14 +463,18 @@ async fn extract_in(dir: &Path, id: &str) -> Result<Formats, String> {
         .args(["--no-plugin-dirs", "--plugin-dirs"])
         .arg(&p.plugins)
         .arg("--extractor-args")
-        .arg(server_home)
-        .arg("--")
-        .arg(format!("https://www.youtube.com/watch?v={id}"));
+        .arg(server_home);
+    if *route == engine::Route::Direct {
+        // Not the system's proxy either (yt-dlp reads Windows' settings when no variable is set).
+        command.args(["--proxy", ""]);
+    }
+    command.arg("--").arg(format!("https://www.youtube.com/watch?v={id}"));
+    reach_by(&mut command, route);
     let out = run(command, EXTRACT_TIMEOUT).await?;
     if !out.status.success() {
-        return Err(tail(&out.stderr));
+        return Err(ModuleError::Refused(tail(&out.stderr)));
     }
-    let info: Value = serde_json::from_slice(&out.stdout).map_err(|e| format!("unexpected yt-dlp output: {e}"))?;
+    let info: Value = serde_json::from_slice(&out.stdout).map_err(ModuleError::UnexpectedOutput)?;
     Ok(formats(&info))
 }
 
@@ -454,26 +523,26 @@ fn formats(info: &Value) -> Formats {
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-async fn run(mut command: tokio::process::Command, limit: Duration) -> Result<std::process::Output, String> {
+async fn run(mut command: tokio::process::Command, limit: Duration) -> Result<std::process::Output, ModuleError> {
     command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
     // Its own process group: the programs it starts (Deno, bgutil) end with it (see `end_tree`).
     #[cfg(unix)]
     command.process_group(0);
-    let child = command.spawn().map_err(|e| format!("cannot start the YouTube module: {e}"))?;
+    let child = command.spawn().map_err(ModuleError::CannotStart)?;
     let pid = child.id();
     let output = child.wait_with_output();
     tokio::pin!(output);
     tokio::select! {
-        result = &mut output => result.map_err(|e| e.to_string()),
+        result = &mut output => result.map_err(ModuleError::Wait),
         () = tokio::time::sleep(limit) => {
             // Ended while the child still is (then by `kill_on_drop`): ending only yt-dlp would
             // leave its Deno running, hundreds of megabytes each.
             if let Some(pid) = pid {
                 end_tree(pid).await;
             }
-            Err("the YouTube module took too long".into())
+            Err(ModuleError::TooLong)
         }
     }
 }
@@ -495,6 +564,35 @@ async fn end_tree(pid: u32) {
             libc::killpg(group, libc::SIGKILL);
         }
     }
+}
+
+const PROXY_VARIABLES: [&str; 6] = ["ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy", "http_proxy", "https_proxy"];
+
+/// The programs reach the Internet like RDM's downloads (`route`), never around a proxy the user
+/// counts on: its address in their proxy variables, or none at all for a direct connection.
+fn reach_by(command: &mut tokio::process::Command, route: &engine::Route) {
+    if *route == engine::Route::System {
+        return;
+    }
+    for name in PROXY_VARIABLES.iter().chain(&["NO_PROXY", "no_proxy"]) {
+        command.env_remove(name);
+    }
+    if let engine::Route::Proxy { url, user, password } = route {
+        let proxy = with_login(url, user, password);
+        for name in PROXY_VARIABLES {
+            command.env(name, &proxy);
+        }
+    }
+}
+
+/// The proxy's address with its login (`user:password@`), the way programs read it from their
+/// environment.
+fn with_login(url: &str, user: &str, password: &str) -> String {
+    let Ok(mut address) = url::Url::parse(url) else { return url.to_owned() };
+    if user.is_empty() || address.set_username(user).and_then(|()| address.set_password(Some(password))).is_err() {
+        return url.to_owned();
+    }
+    address.into()
 }
 
 /// The last meaningful line of an error output (yt-dlp: `ERROR: …`).
@@ -552,7 +650,7 @@ mod tests {
         unzip_exe(&data, "deno", &path).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"\x7fELF program");
         assert!(!crate::settings::with_suffix(&path, ".tmp").exists(), "nothing left beside it");
-        assert!(unzip_exe(&data, "missing", &path).is_err());
+        assert!(matches!(unzip_exe(&data, "missing", &path), Err(ModuleError::MissingEntry { .. })));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -579,7 +677,7 @@ mod tests {
             c.args(["-c", &format!("sleep 120 & echo $! > '{}'; wait", file.display())]);
             c
         };
-        assert!(run(command, Duration::from_secs(6)).await.is_err(), "timed out");
+        assert!(matches!(run(command, Duration::from_secs(6)).await, Err(ModuleError::TooLong)));
         let pid: u32 = std::fs::read_to_string(&file).expect("the child started").trim().parse().unwrap();
         let _ = std::fs::remove_file(&file);
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
@@ -633,6 +731,44 @@ mod tests {
         assert_eq!(tail(b"boom\n\n"), "boom");
         assert_eq!(tail(b""), "failed");
     }
+
+    /// The variables `reach_by` sets (`Some`) or clears (`None`) for `route`, by upper-case name.
+    fn proxy_environment(route: &engine::Route) -> std::collections::HashMap<String, Option<String>> {
+        let mut command = tokio::process::Command::new("yt-dlp");
+        reach_by(&mut command, route);
+        let std = command.as_std();
+        std.get_envs().map(|(name, value)| (name.to_string_lossy().to_ascii_uppercase(), value.map(|v| v.to_string_lossy().into_owned()))).collect()
+    }
+
+    #[test]
+    fn the_programs_go_through_the_proxy_of_the_settings_with_its_login() {
+        let route = engine::Route::Proxy { url: "http://proxy.lan:3128".into(), user: "me".into(), password: "p@ss word".into() };
+
+        let env = proxy_environment(&route);
+
+        for name in ["ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY"] {
+            assert_eq!(env[name].as_deref(), Some("http://me:p%40ss%20word@proxy.lan:3128/"), "{name}");
+        }
+        assert_eq!(env["NO_PROXY"], None, "no exception to the proxy");
+    }
+
+    #[test]
+    fn a_direct_route_clears_every_proxy_variable() {
+        let env = proxy_environment(&engine::Route::Direct);
+
+        assert_eq!(env.len(), 4);
+        assert!(env.values().all(Option::is_none));
+    }
+
+    #[test]
+    fn the_systems_proxy_is_left_to_the_programs() {
+        assert!(proxy_environment(&engine::Route::System).is_empty());
+    }
+
+    #[test]
+    fn a_proxy_without_a_login_keeps_its_address() {
+        assert_eq!(with_login("socks5h://proxy:1080", "", ""), "socks5h://proxy:1080");
+    }
 }
 
 /// The real thing: installs the module (every check included) in a scratch folder and reads a
@@ -643,7 +779,7 @@ mod live {
     #[ignore = "network: downloads the YouTube module"]
     async fn install_and_extract() {
         let dir = std::env::temp_dir().join(format!("rdm-youtube-{}", std::process::id()));
-        super::setup(&dir).await.expect("installation");
+        super::setup(&dir, &engine::Route::System).await.expect("installation");
         assert!(dir.join(super::READY).is_file());
         // bgutil's native drawing library loads (unpacked by RDM, not by its install script).
         let p = super::paths(&dir);
@@ -652,7 +788,7 @@ mod live {
         deno.args(["eval", script]).current_dir(&p.server);
         let out = super::run(deno, std::time::Duration::from_secs(120)).await.expect("deno runs");
         assert!(String::from_utf8_lossy(&out.stdout).contains("canvas ok"), "{}", String::from_utf8_lossy(&out.stderr));
-        let f = super::extract_in(&dir, "jNQXAC9IVRw").await.expect("extraction");
+        let f = super::extract_in(&dir, "jNQXAC9IVRw", &engine::Route::System).await.expect("extraction");
         println!("{} — {} links, UA {}", f.title, f.formats.len(), f.ua);
         assert!(f.formats.iter().any(|x| x.audio && !x.video) && f.formats.iter().any(|x| x.video));
         let _ = std::fs::remove_dir_all(&dir);

@@ -21,7 +21,7 @@ use std::{
 
 use url::Url;
 
-pub use hls::{HlsInfo, Variant};
+pub use hls::{HlsInfo, PlaylistError, Variant};
 pub use merged::PART_SUFFIXES;
 pub use probe::{Probe, probe, probe_once, sanitize_file_name, suggest_file_name};
 pub use rate::RateLimit;
@@ -82,7 +82,7 @@ pub enum EngineError {
     #[error("blocked: Internet content pointing into the local network")]
     LocalNetwork,
     #[error("playlist: {0}")]
-    Playlist(&'static str),
+    Playlist(#[from] PlaylistError),
     #[error("merge: {0}")]
     Mux(#[from] mux::MuxError),
 }

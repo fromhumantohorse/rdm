@@ -12,6 +12,14 @@ use crate::{settings::ProxyMode, tr, trf};
 /// What "Test the proxy" fetches: GitHub's API root, already the one server RDM talks to.
 const PROBE: &str = "https://api.github.com/";
 
+/// Why no client can reach a server: never a direct connection behind the back of a user who
+/// counts on the proxy (it would show their address to the site).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum RouteError {
+    #[error("{}", tr!("adresse de proxy invalide (voir les paramètres)", "invalid proxy address (see the settings)"))]
+    InvalidProxy,
+}
+
 impl Manager {
     /// The route a download takes. `via_proxy`: in automatic mode, this download was switched to
     /// the proxy (slow, or unreachable directly).
@@ -41,34 +49,32 @@ impl Manager {
 
     /// The client for a download of `url`: its route, and — when it starts on the Internet and names
     /// are resolved here — no way into the local network through a name (see `engine::net`).
-    pub(super) async fn client_for_url(&self, url: &Url, via_proxy: bool, insecure: bool) -> Result<Client, String> {
+    pub(super) async fn client_for_url(&self, url: &Url, via_proxy: bool, insecure: bool) -> Result<Client, RouteError> {
         let route = self.route(via_proxy);
         let public_only = resolves_here(&route) && !engine::net::reaches_lan(url).await;
         self.client_for(route, insecure, public_only)
     }
 
-    /// The client for a route (built once, then shared). An unusable proxy address is an error.
-    pub(super) fn client_for(&self, route: Route, insecure: bool, public_only: bool) -> Result<Client, String> {
+    /// The client for a route (built once, then shared).
+    pub(super) fn client_for(&self, route: Route, insecure: bool, public_only: bool) -> Result<Client, RouteError> {
         let options = ClientOptions { route, insecure, public_only };
         let mut clients = lock(&self.clients);
         if let Some(client) = clients.get(&options) {
             return Ok(client.clone());
         }
-        let invalid = || tr!("adresse de proxy invalide (voir les paramètres)", "invalid proxy address (see the settings)").to_owned();
         if let Route::Proxy { url, .. } = &options.route
             && !supported_proxy(url)
         {
-            return Err(invalid());
+            return Err(RouteError::InvalidProxy);
         }
-        let client = engine::client_with(&options).map_err(|_| invalid())?;
+        let client = engine::client_with(&options).map_err(|_| RouteError::InvalidProxy)?;
         clients.insert(options, client.clone());
         Ok(client)
     }
 
     /// The client for requests on the browser's behalf about `url` (quality lists, link checks,
-    /// names). An unusable proxy address is an error: never a direct connection behind the back of
-    /// a user who counts on the proxy (it would show their address to the site).
-    pub async fn client(&self, url: &Url) -> Result<Client, String> {
+    /// names).
+    pub async fn client(&self, url: &Url) -> Result<Client, RouteError> {
         self.client_for_url(url, false, false).await
     }
 

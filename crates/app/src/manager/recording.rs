@@ -91,7 +91,7 @@ impl Manager {
             let total: u64 = r.parts.values().sum();
             if total.saturating_add(data.len() as u64) > MAX_RECORDING_BYTES {
                 drop(recordings);
-                self.cancel_recording(token, tr!("enregistrement anormalement volumineux", "abnormally large recording"));
+                self.cancel_recording(token, Failure::RecordingTooLarge);
                 return Ok(false);
             }
             r.last_data = Instant::now();
@@ -148,8 +148,8 @@ impl Manager {
             r.files.clear(); // closed before they are merged, then deleted
             let result = match r.best_source() {
                 Some(ms) => engine::mux::merge(&r.part(ms, Track::Video), &r.part(ms, Track::Audio), &r.target)
-                    .map_err(|e| trf!("fusion audio/vidéo impossible : {e}", "cannot merge audio and video: {e}", e = e)),
-                None => Err(tr!("aucune donnée vidéo et audio reçue", "no video or audio data received").to_owned()),
+                    .map_err(|e| Failure::Merge(e.to_string())),
+                None => Err(Failure::RecordingEmpty),
             };
             for (ms, track) in r.parts.keys() {
                 let _ = fs::remove_file(r.part(*ms, *track));
@@ -168,7 +168,7 @@ impl Manager {
                         finished = r.target.file_name().map(|n| n.to_string_lossy().into_owned());
                         e.download.complete()
                     }
-                    Err(reason) => e.download.fail(reason),
+                    Err(failure) => e.download.fail(failure),
                 };
             });
             lock(&this.busy).remove(&r.id);
@@ -183,14 +183,14 @@ impl Manager {
     }
 
     /// Stops a recording (cancelled in the page, idle, or removed): drops its partial data.
-    pub fn cancel_recording(&self, token: &str, reason: &str) -> bool {
+    pub fn cancel_recording(&self, token: &str, why: Failure) -> bool {
         let Some(mut r) = lock(&self.recordings).remove(token) else { return false };
         r.files.clear(); // closed before they are deleted
         for (ms, track) in r.parts.keys() {
             let _ = fs::remove_file(r.part(*ms, *track));
         }
         self.update(r.id, |e| {
-            let _ = e.download.fail(reason);
+            let _ = e.download.fail(why);
         });
         true
     }
@@ -207,7 +207,7 @@ impl Manager {
             .map(|(t, _)| t.clone())
             .collect();
         for token in idle {
-            self.cancel_recording(&token, tr!("enregistrement interrompu (onglet fermé ou lecture arrêtée)", "recording interrupted (tab closed or playback stopped)"));
+            self.cancel_recording(&token, Failure::RecordingAbandoned);
         }
     }
 }

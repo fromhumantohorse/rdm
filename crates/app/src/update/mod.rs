@@ -31,7 +31,14 @@ use std::{
 
 use serde::Deserialize;
 
-use crate::tr;
+mod error;
+mod install;
+mod package;
+
+pub use error::UpdateError;
+pub use install::{clean_leftovers, install_linux, installed_exe, relaunch, run_assistant, start_installation};
+use install::work_dir;
+pub use package::{Verified, download};
 
 /// `owner/repo`, from `repository` in Cargo.toml: the single source for where releases live.
 pub fn repo() -> Option<&'static str> {
@@ -39,13 +46,6 @@ pub fn repo() -> Option<&'static str> {
     let path = url.strip_prefix("https://github.com/")?.trim_end_matches('/');
     (path.split('/').count() == 2 && !path.contains("OWNER")).then_some(path)
 }
-mod install;
-mod package;
-
-pub use install::{clean_leftovers, install_linux, installed_exe, relaunch, run_assistant, start_installation};
-use install::work_dir;
-pub use package::{Verified, download};
-
 
 /// What the UI shows about updates.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -263,30 +263,28 @@ fn package(assets: &[Asset], method: Method) -> Option<Package> {
     Some(Package { name: asset.name.clone(), url: asset.browser_download_url.clone(), size: asset.size, sha256, signature: Some(signature) })
 }
 
-async fn latest(client: &reqwest::Client) -> Result<Option<ApiRelease>, String> {
-    let repo = repo().ok_or_else(|| tr!("dépôt GitHub non configuré", "GitHub repository not configured").to_owned())?;
-    let unreachable = || tr!("GitHub est injoignable", "GitHub cannot be reached").to_owned();
+async fn latest(client: &reqwest::Client) -> Result<Option<ApiRelease>, UpdateError> {
+    let repo = repo().ok_or(UpdateError::NotConfigured)?;
     let res = client
         .get(format!("https://api.github.com/repos/{repo}/releases/latest"))
         .header("accept", "application/vnd.github+json")
         .timeout(Duration::from_secs(20))
         .send()
         .await
-        .map_err(|_| unreachable())?;
+        .map_err(|_| UpdateError::Unreachable)?;
     if res.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(None); // no release published yet
     }
     if !res.status().is_success() {
-        let status = res.status().as_u16();
-        return Err(crate::trf!("GitHub a répondu {status}", "GitHub answered {status}", status = status));
+        return Err(UpdateError::Refused(res.status().as_u16()));
     }
-    let body = res.bytes().await.map_err(|_| unreachable())?;
-    let r: ApiRelease = serde_json::from_slice(&body).map_err(|_| tr!("réponse inattendue de GitHub", "unexpected answer from GitHub").to_owned())?;
+    let body = res.bytes().await.map_err(|_| UpdateError::Unreachable)?;
+    let r: ApiRelease = serde_json::from_slice(&body).map_err(|_| UpdateError::UnexpectedAnswer)?;
     Ok((!r.draft && !r.prerelease).then_some(r))
 }
 
 /// The latest published release if it is newer than this build.
-pub async fn check(client: &reqwest::Client) -> Result<Option<Release>, String> {
+pub async fn check(client: &reqwest::Client) -> Result<Option<Release>, UpdateError> {
     let Some(r) = latest(client).await? else { return Ok(None) };
     if !is_newer(&r.tag_name, env!("CARGO_PKG_VERSION")) {
         return Ok(None);
@@ -325,7 +323,7 @@ fn trusted(url: &str) -> bool {
 /// The signed Firefox package of the latest release, written to `dest`: release Firefox installs
 /// it for good (an unsigned package only temporarily). `Ok(false)` when there is none — no
 /// release, a release older than this RDM, or a package Mozilla has not signed.
-pub async fn signed_firefox_xpi(client: &reqwest::Client, dest: &Path) -> Result<bool, String> {
+pub async fn signed_firefox_xpi(client: &reqwest::Client, dest: &Path) -> Result<bool, UpdateError> {
     let Some(r) = latest(client).await? else { return Ok(false) };
     if is_newer(env!("CARGO_PKG_VERSION"), &r.tag_name) {
         return Ok(false);
@@ -334,29 +332,28 @@ pub async fn signed_firefox_xpi(client: &reqwest::Client, dest: &Path) -> Result
     if !trusted(&asset.browser_download_url) {
         return Ok(false);
     }
-    let failed = || tr!("téléchargement de l'extension impossible", "cannot download the extension").to_owned();
     let res = client
         .get(&asset.browser_download_url)
         .timeout(Duration::from_secs(60))
         .send()
         .await
         .and_then(reqwest::Response::error_for_status)
-        .map_err(|_| failed())?;
+        .map_err(|_| UpdateError::Unreachable)?;
     if res.content_length().is_some_and(|n| n > MAX_XPI) {
         return Ok(false);
     }
-    let bytes = res.bytes().await.map_err(|_| failed())?;
+    let bytes = res.bytes().await.map_err(|_| UpdateError::Interrupted)?;
     // Mozilla's signature files: without them release Firefox refuses the package.
     let signed = |marker: &[u8]| bytes.windows(marker.len()).any(|w| w == marker);
     if bytes.len() as u64 > MAX_XPI || !(signed(b"META-INF/mozilla.rsa") || signed(b"META-INF/cose.sig")) {
         return Ok(false);
     }
     if let Some(dir) = dest.parent() {
-        tokio::fs::create_dir_all(dir).await.map_err(|e| e.to_string())?;
+        tokio::fs::create_dir_all(dir).await?;
     }
     let tmp = crate::settings::with_suffix(dest, ".tmp");
-    tokio::fs::write(&tmp, &bytes).await.map_err(|e| e.to_string())?;
-    tokio::fs::rename(&tmp, dest).await.map_err(|e| e.to_string())?;
+    tokio::fs::write(&tmp, &bytes).await?;
+    tokio::fs::rename(&tmp, dest).await?;
     Ok(true)
 }
 
