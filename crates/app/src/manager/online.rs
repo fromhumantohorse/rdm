@@ -131,7 +131,13 @@ impl Manager {
             };
             this.set_update(update::State::Installing);
             if update::method() == update::Method::Msi {
-                match update::start_installation(&file) {
+                let started = tokio::task::spawn_blocking({
+                    let file = file.clone();
+                    move || update::start_installation(&file)
+                })
+                .await
+                .unwrap_or_else(|e| Err(std::io::Error::other(e)));
+                match started {
                     Ok(()) => this.request_quit(),
                     Err(e) => fail(trf!("impossible de lancer l'installation : {e}", "cannot start the installation: {e}", e = e)),
                 }

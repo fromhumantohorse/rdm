@@ -243,6 +243,12 @@ fn detail_line(e: &Entry, status: &Status, recording: bool, done: u64, total: u6
     let size = if total > 0 { bytes(total) } else { tr!("taille inconnue", "unknown size").into() };
     let eta = e.eta().map(|s| trf!(" · reste {}", " · {} left", duration(s))).unwrap_or_default();
     let (got, rate) = (bytes(done), speed(e.speed));
+    if let (Status::Queued, Some(retry)) = (status, &e.retry) {
+        let left = retry.at.saturating_duration_since(std::time::Instant::now()).as_secs();
+        let reason = &retry.reason;
+        let when = if left == 0 { tr!("maintenant", "now").to_owned() } else { trf!("dans {}", "in {}", duration(left)) };
+        return (trf!("{reason} · nouvel essai {when}", "{reason} · retrying {when}", reason = reason, when = when), p.warning);
+    }
     let text = match status {
         Status::Running if recording => {
             let estimate = if total > 0 { format!(" / ~{}", bytes(total)) } else { String::new() };
@@ -266,13 +272,6 @@ fn detail_line(e: &Entry, status: &Status, recording: bool, done: u64, total: u6
             }
         }
         Status::Paused => format!("{got} / {size}"),
-        Status::Queued if e.retry.is_some() => {
-            let retry = e.retry.as_ref().expect("checked");
-            let left = retry.at.saturating_duration_since(std::time::Instant::now()).as_secs();
-            let reason = &retry.reason;
-            let when = if left == 0 { tr!("maintenant", "now").to_owned() } else { trf!("dans {}", "in {}", duration(left)) };
-            return (trf!("{reason} · nouvel essai {when}", "{reason} · retrying {when}", reason = reason, when = when), p.warning);
-        }
         Status::Queued if e.resolving => tr!("analyse du lien auprès du serveur…", "asking the server about the link…").to_owned(),
         Status::Queued => trf!("{got} / {size} · démarre dès qu'une place se libère", "{got} / {size} · starts as soon as a place is free", got = got, size = size),
         Status::Failed(reason) if recording => {

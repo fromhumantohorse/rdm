@@ -6,6 +6,7 @@
   "sent": { "message": "✓ Envoyé à RDM" },
   "sentName": { "message": "✓ Envoyé à RDM : $1" },
   "noAnswer": { "message": "✗ RDM n'a pas répondu : le navigateur garde ce téléchargement" },
+  "busy": { "message": "✗ Trop de téléchargements attendent votre réponse dans RDM : le navigateur garde ce téléchargement" },
   "notRunning": { "message": "✗ RDM n'est pas lancé : ouvrez RDM, puis réessayez" },
   "notRunningShort": { "message": "✗ RDM n'est pas lancé" },
   "notWeb": { "message": "✗ Ce lien ne se télécharge pas hors de la page (adresse non web)" },

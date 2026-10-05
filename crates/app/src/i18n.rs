@@ -367,6 +367,109 @@ mod tests {
         }
     }
 
+    /// The value of the Rust string literal at the start of `code` (blanks, commas and an opening
+    /// parenthesis skipped), and the code after it.
+    fn literal(code: &str) -> Option<(String, &str)> {
+        let code = code.trim_start_matches(|c: char| c.is_whitespace() || c == ',' || c == '(');
+        let body = code.strip_prefix('"')?;
+        let mut chars = body.char_indices().peekable();
+        let mut text = String::new();
+        while let Some((at, c)) = chars.next() {
+            match c {
+                '"' => return Some((text, &body[at + 1..])),
+                '\\' => match chars.next()?.1 {
+                    'n' => text.push('\n'),
+                    't' => text.push('\t'),
+                    'u' => {
+                        let digits: String = chars.by_ref().map(|(_, c)| c).skip(1).take_while(|&c| c != '}').collect();
+                        text.push(char::from_u32(u32::from_str_radix(&digits, 16).ok()?)?);
+                    }
+                    '\n' => {
+                        while chars.next_if(|(_, c)| c.is_whitespace()).is_some() {}
+                    }
+                    other => text.push(other),
+                },
+                _ => text.push(c),
+            }
+        }
+        None
+    }
+
+    /// The English texts of `tr!`, `trf!` and `count` calls in `code`.
+    fn english_texts(code: &str) -> Vec<String> {
+        let mut texts = Vec::new();
+        for call in ["tr!(", "trf!("] {
+            for (at, _) in code.match_indices(call) {
+                if let Some((_, after_french)) = literal(&code[at + call.len()..])
+                    && let Some((english, _)) = literal(after_french)
+                {
+                    texts.push(english);
+                }
+            }
+        }
+        for (at, _) in code.match_indices("count(") {
+            if code[..at].ends_with('.') || code[..at].ends_with("fn ") {
+                continue; // an iterator's count, or the definition
+            }
+            let mut rest = &code[at + "count(".len()..];
+            let mut pairs = Vec::new();
+            while pairs.len() < 2 {
+                let Some(open) = rest.find("(\"") else { break };
+                let Some((one, after)) = literal(&rest[open..]) else { break };
+                let Some((other, after)) = literal(after) else { break };
+                pairs.push(format!("{one}|{other}"));
+                rest = after;
+            }
+            if let [_, english] = pairs.as_slice() {
+                texts.push(english.clone());
+            }
+        }
+        texts
+    }
+
+    /// Every English text the interface shows: the code before its tests, comments left out, and
+    /// the category names (`domain::Category::label`).
+    fn texts_of_the_code() -> std::collections::BTreeSet<String> {
+        let mut texts: std::collections::BTreeSet<String> = domain::Category::ALL.iter().map(|c| c.label(true).to_owned()).collect();
+        let mut dirs = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let source = std::fs::read_to_string(&path).unwrap();
+                    let code = source.split("#[cfg(test)]").next().unwrap_or_default();
+                    let code: String = code.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+                    texts.extend(english_texts(&code));
+                }
+            }
+        }
+        texts
+    }
+
+    #[test]
+    fn reads_the_texts_of_calls() {
+        let code = r#"tr!("Bonjour", "Hello") trf!("{n} fois", "{n} \
+                      times", n = n) items.count() count(n, ("fichier", "fichiers"), ("file", "files"))"#;
+
+        assert_eq!(english_texts(code), ["Hello", "{n} times", "file|files"]);
+    }
+
+    /// Every text the interface shows has its translation in the tables (which all hold the same
+    /// texts, see above), and every translation is of a text the interface shows.
+    #[test]
+    fn the_tables_translate_exactly_the_texts_of_the_code() {
+        let shown = texts_of_the_code();
+        let translated: std::collections::BTreeSet<String> = Spanish.table().keys().map(|k| (*k).to_owned()).collect();
+
+        let untranslated: Vec<&String> = shown.difference(&translated).collect();
+        let dead: Vec<&String> = translated.difference(&shown).collect();
+
+        assert!(untranslated.is_empty(), "shown but not translated: {untranslated:#?}");
+        assert!(dead.is_empty(), "translated but never shown: {dead:#?}");
+    }
+
     #[test]
     fn plural_forms() {
         assert_eq!([1, 2, 5, 11, 21, 22, 25].map(|n| plural_form(Russian, n)), [0, 1, 2, 2, 0, 1, 2]);

@@ -6,6 +6,7 @@
   "sent": { "message": "✓ Terkirim ke RDM" },
   "sentName": { "message": "✓ Terkirim ke RDM: $1" },
   "noAnswer": { "message": "✗ RDM tidak menjawab: peramban tetap menangani unduhan ini" },
+  "busy": { "message": "✗ Terlalu banyak unduhan menunggu jawaban Anda di RDM: peramban tetap menangani unduhan ini" },
   "notRunning": { "message": "✗ RDM tidak berjalan: buka RDM, lalu coba lagi" },
   "notRunningShort": { "message": "✗ RDM tidak berjalan" },
   "notWeb": { "message": "✗ Tautan ini tidak dapat diunduh di luar halaman (bukan alamat web)" },

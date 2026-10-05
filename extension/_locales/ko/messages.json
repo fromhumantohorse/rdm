@@ -6,6 +6,7 @@
   "sent": { "message": "✓ RDM으로 보냈습니다" },
   "sentName": { "message": "✓ RDM으로 보냈습니다: $1" },
   "noAnswer": { "message": "✗ RDM이 응답하지 않았습니다: 브라우저가 이 다운로드를 유지합니다" },
+  "busy": { "message": "✗ RDM에서 응답을 기다리는 다운로드가 너무 많습니다: 브라우저가 이 다운로드를 유지합니다" },
   "notRunning": { "message": "✗ RDM이 실행 중이 아닙니다: RDM을 연 다음 다시 시도하세요" },
   "notRunningShort": { "message": "✗ RDM이 실행 중이 아닙니다" },
   "notWeb": { "message": "✗ 이 링크는 페이지 밖에서 다운로드할 수 없습니다(웹 주소가 아님)" },

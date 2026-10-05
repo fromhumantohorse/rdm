@@ -30,7 +30,7 @@ use crate::settings::BRIDGE_PORT;
 pub const HOST: &str = "rdm.bridge";
 /// The RDM extension, the only one allowed to start the connector.
 const CHROME_ORIGIN: &str = "chrome-extension://cgailhenfaoohkakpdacohcnmppepjjl/";
-const FIREFOX_ID: &str = "rdm@rdm-download-manager";
+pub(crate) const FIREFOX_ID: &str = "rdm@rdm-download-manager";
 
 /// Browsers cap what a host may send at 1 MiB; requests from the extension are small.
 const MAX_REPLY: usize = 1 << 20;

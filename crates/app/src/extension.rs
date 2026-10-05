@@ -56,14 +56,17 @@ const KNOWN: &[(&str, &str, Flavour)] = &[
 /// Every browser met so far, one entry per key: `Browser` stays a cheap copy.
 static SEEN: std::sync::Mutex<Vec<&'static Info>> = std::sync::Mutex::new(Vec::new());
 
+/// Words of a browser's name that do not tell it apart: vendors, and generic words (`NOT_A_NAME`
+/// in `extension/shared.js`).
+const NOT_A_NAME: [&str; 7] = ["mozilla", "google", "microsoft", "browser", "stable", "web", "the"];
+
 /// The key of a browser's name, as the extension computes it too (`browserKey` in
 /// `extension/shared.js`, same tests): the first word that is not the vendor's or a generic one,
 /// letters only, at most 16. "Google Chrome" is `chrome`, "Mullvad Browser" is `mullvad`.
 pub fn key_of(name: &str) -> String {
-    const SKIP: [&str; 7] = ["mozilla", "google", "microsoft", "browser", "stable", "web", "the"];
     name.split(|c: char| !c.is_ascii_alphabetic())
         .map(str::to_ascii_lowercase)
-        .find(|w| !w.is_empty() && !SKIP.contains(&w.as_str()))
+        .find(|w| !w.is_empty() && !NOT_A_NAME.contains(&w.as_str()))
         .map(|w| w.chars().take(16).collect())
         .unwrap_or_default()
 }
@@ -568,6 +571,58 @@ mod tests {
         ] {
             assert_eq!(key_of(name), key, "{name}");
         }
+    }
+
+    #[test]
+    fn the_extension_skips_the_same_generic_words() {
+        let shared_js = include_str!("../../../extension/shared.js");
+        let start = shared_js.find("const NOT_A_NAME").unwrap();
+        let list = &shared_js[start..start + shared_js[start..].find("]);").unwrap()];
+        let mut words: Vec<&str> = list.split('"').skip(1).step_by(2).collect();
+        let mut ours = NOT_A_NAME.to_vec();
+
+        words.sort_unstable();
+        ours.sort_unstable();
+
+        assert_eq!(words, ours);
+    }
+
+    fn bundled_manifest() -> serde_json::Value {
+        let bytes = FILES.iter().find(|(name, _)| *name == "manifest.json").map(|(_, bytes)| *bytes).unwrap();
+        serde_json::from_slice(bytes).unwrap()
+    }
+
+    fn base64_decode(text: &str) -> Vec<u8> {
+        const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let (mut bits, mut pending, mut out) = (0u32, 0u32, Vec::new());
+        for c in text.bytes().filter(|&c| c != b'=') {
+            let value = u32::try_from(TABLE.iter().position(|&t| t == c).unwrap()).unwrap();
+            bits = (bits << 6 | value) & 0xFFFF;
+            pending += 6;
+            if pending >= 8 {
+                pending -= 8;
+                out.push(u8::try_from(bits >> pending & 0xFF).unwrap());
+            }
+        }
+        out
+    }
+
+    /// The ID RDM trusts (the bridge, the native connector) is the one Chrome derives from the
+    /// manifest's `key`: the first 32 hexadecimal digits of its SHA-256, written with `a` to `p`.
+    #[test]
+    fn the_trusted_extension_id_is_the_manifests_key() {
+        use sha2::{Digest, Sha256};
+        let key = base64_decode(bundled_manifest()["key"].as_str().unwrap());
+
+        let digest = crate::hex::encode(&Sha256::digest(&key));
+        let id: String = digest.chars().take(32).map(|c| char::from(b'a' + u8::try_from(c.to_digit(16).unwrap()).unwrap())).collect();
+
+        assert_eq!(format!("chrome-extension://{id}"), crate::bridge::EXTENSION_ORIGIN);
+    }
+
+    #[test]
+    fn the_trusted_firefox_id_is_the_manifests() {
+        assert_eq!(bundled_manifest()["browser_specific_settings"]["gecko"]["id"], crate::native::FIREFOX_ID);
     }
 
     #[test]

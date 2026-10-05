@@ -93,10 +93,18 @@
     menu.hidden = false;
   };
 
+  /** What the menu says once a download was handed to RDM, or not. */
+  const handOffNote = (ok) => {
+    if (ok === true) return t("sent");
+    if (ok === "unpaired") return UNPAIRED_NOTE;
+    if (ok === "busy") return t("busy");
+    return t("notRunningShort");
+  };
+
   // `via`: how RDM must fetch the link — `{ user_agent, bare }` for YouTube, `{}` elsewhere.
   const download = (url, filename, audio_url, via = {}) => async () => {
     const ok = await send({ kind: "download", url, audio_url, filename, ...via });
-    show(note(ok === true ? t("sent") : ok === "unpaired" ? UNPAIRED_NOTE : t("notRunningShort")));
+    show(note(handOffNote(ok)));
     setTimeout(hide, ok === true ? 1400 : 5000);
   };
   const action = (title, detail, url, filename, audio_url, via) =>

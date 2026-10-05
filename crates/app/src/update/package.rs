@@ -76,7 +76,8 @@ async fn fetch(client: &reqwest::Client, version: &str, package: &Package, path:
     use sha2::{Digest, Sha256};
     use tokio::io::AsyncWriteExt;
 
-    let res = client.get(&package.url).send().await.map_err(|_| Retry(tr!("GitHub est injoignable", "GitHub cannot be reached").into()))?;
+    let unreachable = || Retry(tr!("GitHub est injoignable", "GitHub cannot be reached").into());
+    let res = tokio::time::timeout(STALL, client.get(&package.url).send()).await.map_err(|_| unreachable())?.map_err(|_| unreachable())?;
     if !res.status().is_success() {
         let status = res.status().as_u16();
         let reason = crate::trf!("téléchargement refusé par GitHub ({status})", "download refused by GitHub ({status})", status = status);

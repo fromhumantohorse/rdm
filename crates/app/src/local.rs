@@ -118,7 +118,7 @@ mod imp {
     /// An address as these tables write it: the raw bytes in hexadecimal, 32 bits at a time in the
     /// machine's order (127.0.0.1 is `0100007F`).
     fn hex(bytes: &[u8]) -> String {
-        bytes.chunks(4).map(|w| format!("{:08X}", u32::from_ne_bytes([w[0], w[1], w[2], w[3]]))).collect()
+        bytes.as_chunks::<4>().0.iter().map(|word| format!("{:08X}", u32::from_ne_bytes(*word))).collect()
     }
 
     /// Owner (uid) of the socket at the other end of a connection from `peer` to `server_port`: the

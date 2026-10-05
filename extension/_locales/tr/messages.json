@@ -6,6 +6,7 @@
   "sent": { "message": "✓ RDM'ye gönderildi" },
   "sentName": { "message": "✓ RDM'ye gönderildi: $1" },
   "noAnswer": { "message": "✗ RDM yanıt vermedi: tarayıcı bu indirmeyi kendisi tutuyor" },
+  "busy": { "message": "✗ RDM'de yanıtınızı bekleyen çok fazla indirme var: tarayıcı bu indirmeyi kendisi tutuyor" },
   "notRunning": { "message": "✗ RDM çalışmıyor: RDM'yi açın, sonra yeniden deneyin" },
   "notRunningShort": { "message": "✗ RDM çalışmıyor" },
   "notWeb": { "message": "✗ Bu bağlantı sayfanın dışında indirilemez (web adresi değil)" },

@@ -51,13 +51,19 @@ fn main() -> eframe::Result {
     priority::full_speed_in_background();
     // Transfers are I/O-bound: a few workers drive 64 connections; fewer threads, less memory.
     let workers = std::thread::available_parallelism().map_or(2, |n| n.get().clamp(2, 4));
-    let rt = tokio::runtime::Builder::new_multi_thread()
+    let built = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(workers)
         .max_blocking_threads(64)
         .on_thread_start(priority::transfer_thread)
         .enable_all()
-        .build()
-        .expect("tokio runtime");
+        .build();
+    let rt = match built {
+        Ok(rt) => rt,
+        Err(e) => {
+            notify::fatal(&trf!("RDM ne peut pas démarrer : {e}", "RDM cannot start: {e}", e = e));
+            return Ok(());
+        }
+    };
 
     // The installer closes a running RDM cleanly before replacing it.
     if args.iter().any(|a| a == QUIT_FLAG) {

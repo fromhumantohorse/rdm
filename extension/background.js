@@ -203,8 +203,28 @@ async function checkIn() {
   await appConfig(); // refreshes the cached capture list
 }
 
-/** Outcome of a hand-off: true (accepted), "unpaired" (awaiting approval in RDM) or false. */
-const outcome = (res, accepted) => (res?.status === accepted ? true : res?.status === UNPAIRED ? "unpaired" : false);
+/** RDM refused a hand-off: too many downloads wait for the user's answer there. */
+const BUSY = 429;
+
+/**
+ * Outcome of a hand-off: true (accepted), "unpaired" (awaiting approval in RDM), "busy" (RDM
+ * running, too many waiting for the user's answer) or false.
+ */
+const outcome = (res, accepted) => {
+  switch (res?.status) {
+    case accepted:
+      return true;
+    case UNPAIRED:
+      return "unpaired";
+    case BUSY:
+      return "busy";
+    default:
+      return false;
+  }
+};
+
+/** The page's message for a hand-off that did not happen. */
+const refusal = (sent) => (sent === "unpaired" ? `✗ ${UNPAIRED_TEXT}` : sent === "busy" ? t("busy") : t("notRunning"));
 
 const CONFIG = "config";
 const cachedConfig = async () => (await ext.storage.session.get(CONFIG).catch(() => ({})))[CONFIG] ?? null;
@@ -287,7 +307,7 @@ async function context({ url, referrer, topUrl, storeId, userAgent, bare = false
   };
 }
 
-/** true (accepted), "unpaired" (awaiting approval in RDM) or false (RDM absent or refusing). */
+/** true (accepted), "unpaired" (awaiting approval in RDM), "busy" or false (RDM absent or refusing). */
 async function sendToApp(request) {
   const { url, audio_url, filename } = request;
   if (!isWeb(url) || (audio_url && !isWeb(audio_url))) return false;
@@ -376,7 +396,7 @@ async function intercept(item) {
     toast(t("sentName", filename ?? nameOf(url)));
   } else {
     await ext.downloads.resume(item.id).catch(() => {});
-    if (sent === "unpaired") return toast(`✗ ${UNPAIRED_TEXT}`);
+    if (sent === "unpaired" || sent === "busy") return toast(refusal(sent));
     // RDM closed since its last answer: say it once, then leave downloads alone until it is back.
     await forgetConfig();
     toast(t("noAnswer"));
@@ -509,8 +529,7 @@ ext.contextMenus.onClicked.addListener(async ({ linkUrl, srcUrl, pageUrl, frameU
   const url = linkUrl || srcUrl;
   if (!isWeb(url)) return toast(t("notWeb"), tab?.id);
   const sent = await sendToApp({ url, referrer: frameUrl || pageUrl, topUrl: pageUrl, storeId: await storeOf(tab) });
-  const text = sent === true ? t("sentName", nameOf(url)) : sent === "unpaired" ? `✗ ${UNPAIRED_TEXT}` : t("notRunning");
-  toast(text, tab?.id);
+  toast(sent === true ? t("sentName", nameOf(url)) : refusal(sent), tab?.id);
 });
 
 function start() {

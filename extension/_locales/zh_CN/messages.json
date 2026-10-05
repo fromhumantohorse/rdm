@@ -6,6 +6,7 @@
   "sent": { "message": "✓ 已发送到 RDM" },
   "sentName": { "message": "✓ 已发送到 RDM：$1" },
   "noAnswer": { "message": "✗ RDM 没有响应：浏览器将保留此下载" },
+  "busy": { "message": "✗ RDM 中等待您回复的下载过多：浏览器将保留此下载" },
   "notRunning": { "message": "✗ RDM 未运行：请打开 RDM，然后重试" },
   "notRunningShort": { "message": "✗ RDM 未运行" },
   "notWeb": { "message": "✗ 此链接无法在页面之外下载（不是网页地址）" },

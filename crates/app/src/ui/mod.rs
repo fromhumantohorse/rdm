@@ -585,8 +585,8 @@ impl<'a> App<'a> {
                 // Deleting a file cannot be undone: asked first (see `delete_dialog`).
                 Action::Remove(id, true) => self.confirm_delete = Some(id),
                 Action::Remove(id, false) => self.manager.remove(id, false),
-                Action::Open(path) => open_file(path),
-                Action::Reveal(path) => reveal_file(path),
+                Action::Open(path) => open_file(path, &self.manager),
+                Action::Reveal(path) => reveal_file(path, &self.manager),
                 Action::Copy(text, what) => {
                     self.manager.copied_by_rdm(&text);
                     ctx.copy_text(text);
@@ -753,34 +753,45 @@ fn backdrop(ctx: &Context) {
     widgets::glow(&painter, screen.left_top() + vec2(520.0, -80.0), vec2(560.0, 320.0), p.accent.gamma_multiply(strength));
 }
 
-/// Opens a finished file with its default application.
+/// Opens a finished file with its default application; a failure is said in the window.
 ///
-/// Linux: off the UI thread, and `xdg-open` is waited for there, so it is reaped instead of
+/// Off the UI thread, and on Linux `xdg-open` is waited for there, so it is reaped instead of
 /// lingering as a zombie process until RDM exits (the `opener` crate never waits for it).
-fn open_file(path: PathBuf) {
-    #[cfg(windows)]
-    let _ = opener::open(path);
-    #[cfg(not(windows))]
+fn open_file(path: PathBuf, manager: &Arc<Manager>) {
+    let manager = manager.clone();
     std::thread::spawn(move || {
-        use std::process::{Command, Stdio};
-        match Command::new("xdg-open").arg(&path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
-            Ok(mut child) => {
-                let _ = child.wait();
-            }
-            Err(_) => {
-                let _ = opener::open(&path);
-            }
+        if let Err(e) = open_with_default_app(&path) {
+            manager.notice(true, &trf!("Impossible d'ouvrir le fichier : {e}", "Cannot open the file: {e}", e = e));
         }
     });
 }
 
-/// Shows a file in the file manager. Linux: a D-Bus call (connection set-up included), off the UI thread.
-pub(super) fn reveal_file(path: PathBuf) {
-    #[cfg(windows)]
-    let _ = opener::reveal(path);
-    #[cfg(not(windows))]
+#[cfg(windows)]
+fn open_with_default_app(path: &std::path::Path) -> Result<(), String> {
+    opener::open(path).map_err(|e| e.to_string())
+}
+
+#[cfg(not(windows))]
+fn open_with_default_app(path: &std::path::Path) -> Result<(), String> {
+    use std::process::{Command, Stdio};
+    match Command::new("xdg-open").arg(path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+        Ok(mut child) => match child.wait() {
+            Ok(status) if status.success() => Ok(()),
+            Ok(status) => Err(format!("xdg-open: {status}")),
+            Err(e) => Err(e.to_string()),
+        },
+        Err(_) => opener::open(path).map_err(|e| e.to_string()),
+    }
+}
+
+/// Shows a file in the file manager (Linux: a D-Bus call, off the UI thread); a failure is said
+/// in the window.
+pub(super) fn reveal_file(path: PathBuf, manager: &Arc<Manager>) {
+    let manager = manager.clone();
     std::thread::spawn(move || {
-        let _ = opener::reveal(path);
+        if let Err(e) = opener::reveal(&path) {
+            manager.notice(true, &trf!("Impossible d'afficher le dossier : {e}", "Cannot show the folder: {e}", e = e));
+        }
     });
 }
 

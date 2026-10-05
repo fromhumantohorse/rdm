@@ -194,12 +194,10 @@ async fn uninstalled(State(manager): State<Arc<Manager>>, headers: HeaderMap) ->
     if let Err(status) = guard(&manager, &headers) {
         return status;
     }
-    match browser_of(&headers) {
-        Some(browser) => {
-            manager.extension_uninstalled(browser);
-            StatusCode::NO_CONTENT
-        }
-        None => StatusCode::BAD_REQUEST,
+    let Some(browser) = browser_of(&headers).map(str::to_owned) else { return StatusCode::BAD_REQUEST };
+    match tokio::task::spawn_blocking(move || manager.extension_uninstalled(&browser)).await {
+        Ok(()) => StatusCode::NO_CONTENT,
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
@@ -227,8 +225,11 @@ async fn add(State(manager): State<Arc<Manager>>, headers: HeaderMap, Json(req):
     if !web(&req.url) || req.audio_url.as_ref().is_some_and(|u| !web(u)) {
         return StatusCode::BAD_REQUEST;
     }
-    manager.add_from_browser(req);
-    StatusCode::ACCEPTED
+    match tokio::task::spawn_blocking(move || manager.add_from_browser(req)).await {
+        Ok(true) => StatusCode::ACCEPTED,
+        Ok(false) => StatusCode::TOO_MANY_REQUESTS,
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
 }
 
 /// Qualities of an HLS stream, for the extension's quality menu (fetched with the page's cookies).
@@ -365,7 +366,9 @@ async fn record_start(
     if !web(&req.page) || req.filename.trim().is_empty() {
         return Err(StatusCode::BAD_REQUEST);
     }
-    Ok(Json(RecordToken { token: manager.start_recording(req.page, &req.filename) }))
+    let RecordStart { page, filename } = req;
+    let token = tokio::task::spawn_blocking(move || manager.start_recording(page, &filename)).await;
+    token.map(|token| Json(RecordToken { token })).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 #[derive(Deserialize)]
@@ -439,7 +442,11 @@ async fn pair(State(manager): State<Arc<Manager>>, headers: HeaderMap, Json(p): 
     if let Err(status) = guard(&manager, &headers) {
         return status;
     }
-    if manager.pair_firefox(&p.origin) { StatusCode::NO_CONTENT } else { StatusCode::BAD_REQUEST }
+    match tokio::task::spawn_blocking(move || manager.pair_firefox(&p.origin)).await {
+        Ok(true) => StatusCode::NO_CONTENT,
+        Ok(false) => StatusCode::BAD_REQUEST,
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
 }
 
 /// `rdm --quit` (the installer, before replacing files): quit as from the tray's "Quitter". Local

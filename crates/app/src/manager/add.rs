@@ -72,19 +72,19 @@ pub struct ToConfirm {
 
 impl Manager {
     /// A download from the browser extension: added at once, or first shown in the (raised)
-    /// window for the user's go-ahead, as the settings say.
-    pub fn add_from_browser(self: &Arc<Self>, req: AddRequest) {
+    /// window for the user's go-ahead, as the settings say. `false` when there is no room left
+    /// to ask (a page flooding the extension): the browser keeps that download.
+    pub fn add_from_browser(self: &Arc<Self>, req: AddRequest) -> bool {
         // A copy: the disk is looked at below, never under the settings' lock.
         let settings = self.settings();
         let (confirm, ask) = (settings.confirm_browser, settings.existing == ExistingFile::Ask);
         let exists = req.given_name().is_some_and(|n| settings.target_dir(&n).join(&n).is_file());
         // Without confirmation, still asked when the file is already there (`ExistingFile::Ask`).
         if confirm || (ask && exists) {
-            // No room left to ask: a page flooding the extension, the user has enough to answer.
-            let _ = self.wait_for_answer(AddRequest { existing_only: !confirm, exists, ..req });
-        } else {
-            self.add(req);
+            return self.wait_for_answer(AddRequest { existing_only: !confirm, exists, ..req }).is_ok();
         }
+        self.add(req);
+        true
     }
 
     /// Shown in the (raised) window until the user answers (see `to_confirm`). `Err`: no room left
@@ -155,8 +155,11 @@ impl Manager {
         let this = self.clone();
         self.rt.spawn(async move {
             let name = tokio::time::timeout(NAME_TIMEOUT, this.suggest_name(&req.url, &to_header_map(&headers))).await.ok().flatten();
-            this.resolved(id, name);
-            this.schedule();
+            let _ = tokio::task::spawn_blocking(move || {
+                this.resolved(id, name);
+                this.schedule();
+            })
+            .await;
         });
     }
 

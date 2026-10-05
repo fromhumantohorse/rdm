@@ -239,26 +239,32 @@ pub(super) struct Stored {
 /// RDM) are left out, not the whole list; an unreadable file is kept aside (`.bad`) rather than
 /// overwritten by the next save.
 pub(super) fn load_entries() -> Vec<Entry> {
-    load_json::<Vec<serde_json::Value>>(STORE)
-        .into_iter()
-        .filter_map(|v| serde_json::from_value::<Stored>(v).ok())
-        .map(|mut s| {
-            // Interrupted by exit (quit, shutdown, crash): downloads pick up where they were, from
-            // their resume point; a recording cannot continue without its browser tab.
-            if *s.download.status() == Status::Running {
-                let _ = if s.download.is_recording() {
-                    s.download.fail(tr!("enregistrement interrompu (RDM fermé)", "recording interrupted (RDM closed)"))
-                } else {
-                    s.download.retry_later()
-                };
-            }
-            let mut entry = Entry::new(s.download, s.headers, s.downloaded, s.total);
-            entry.sha256 = s.sha256;
-            entry.scan = s.scan.map_or(Scan::None, Scan::Done);
-            entry.replaces = s.replaces;
-            entry
-        })
-        .collect()
+    load_json::<Vec<serde_json::Value>>(STORE).into_iter().filter_map(restore).collect()
+}
+
+/// One saved download back in the list; `None` for one this version cannot read, or whose file is
+/// not a file path RDM would have chosen (a hand-edited list: removing it would delete that path).
+fn restore(saved: serde_json::Value) -> Option<Entry> {
+    let mut s = serde_json::from_value::<Stored>(saved).ok()?;
+    let target = &s.download.target;
+    if !target.is_absolute() || target.file_name().is_none() {
+        return None;
+    }
+    s.sha256 = s.sha256.filter(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()));
+    // Interrupted by exit (quit, shutdown, crash): downloads pick up where they were, from their
+    // resume point; a recording cannot continue without its browser tab.
+    if *s.download.status() == Status::Running {
+        let _ = if s.download.is_recording() {
+            s.download.fail(tr!("enregistrement interrompu (RDM fermé)", "recording interrupted (RDM closed)"))
+        } else {
+            s.download.retry_later()
+        };
+    }
+    let mut entry = Entry::new(s.download, s.headers, s.downloaded, s.total);
+    entry.sha256 = s.sha256;
+    entry.scan = s.scan.map_or(Scan::None, Scan::Done);
+    entry.replaces = s.replaces;
+    Some(entry)
 }
 
 pub(super) fn to_header_map(pairs: &[(String, String)]) -> HeaderMap {
@@ -266,4 +272,36 @@ pub(super) fn to_header_map(pairs: &[(String, String)]) -> HeaderMap {
         .iter()
         .filter_map(|(k, v)| Some((HeaderName::from_bytes(k.as_bytes()).ok()?, HeaderValue::from_str(v).ok()?)))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn saved(target: PathBuf, sha256: Option<&str>) -> serde_json::Value {
+        let download = Download::new("https://x.io/a.zip".parse().unwrap(), target, 8);
+        let stored = Stored { download, headers: Vec::new(), downloaded: 0, total: 0, sha256: sha256.map(str::to_owned), scan: None, replaces: false };
+        serde_json::to_value(stored).unwrap()
+    }
+
+    #[test]
+    fn a_download_saved_with_a_relative_or_folder_path_is_left_out() {
+        let folder_only = std::env::temp_dir().ancestors().last().unwrap().to_path_buf();
+
+        assert!(restore(saved(PathBuf::from("a.zip"), None)).is_none(), "relative: it would follow the working folder");
+        assert!(restore(saved(folder_only, None)).is_none(), "a root: removing it would delete that path");
+        assert!(restore(saved(std::env::temp_dir().join("a.zip"), None)).is_some());
+    }
+
+    #[test]
+    fn a_malformed_fingerprint_is_dropped_before_it_reaches_a_url() {
+        let target = std::env::temp_dir().join("a.zip");
+        let sha256 = "ab".repeat(32);
+
+        let kept = restore(saved(target.clone(), Some(&sha256))).unwrap();
+        let dropped = restore(saved(target, Some("../users/me?x=1"))).unwrap();
+
+        assert_eq!(kept.sha256, Some(sha256));
+        assert_eq!(dropped.sha256, None);
+    }
 }

@@ -6,6 +6,7 @@
   "sent": { "message": "✓ Sent to RDM" },
   "sentName": { "message": "✓ Sent to RDM: $1" },
   "noAnswer": { "message": "✗ RDM did not answer: the browser keeps this download" },
+  "busy": { "message": "✗ Too many downloads are waiting for your answer in RDM: the browser keeps this download" },
   "notRunning": { "message": "✗ RDM is not running: open RDM, then try again" },
   "notRunningShort": { "message": "✗ RDM is not running" },
   "notWeb": { "message": "✗ This link cannot be downloaded outside the page (not a web address)" },

@@ -6,6 +6,7 @@
   "sent": { "message": "✓ Đã gửi đến RDM" },
   "sentName": { "message": "✓ Đã gửi đến RDM: $1" },
   "noAnswer": { "message": "✗ RDM không phản hồi: trình duyệt giữ lại lượt tải này" },
+  "busy": { "message": "✗ Có quá nhiều lượt tải đang chờ bạn trả lời trong RDM: trình duyệt giữ lại lượt tải này" },
   "notRunning": { "message": "✗ RDM chưa chạy: hãy mở RDM rồi thử lại" },
   "notRunningShort": { "message": "✗ RDM chưa chạy" },
   "notWeb": { "message": "✗ Không thể tải liên kết này ngoài trang (không phải địa chỉ web)" },

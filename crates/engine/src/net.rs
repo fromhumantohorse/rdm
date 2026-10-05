@@ -374,6 +374,32 @@ mod tests {
         assert!(same("https://github.com/", "https://api.github.com/"), "only the platform's own suffix");
     }
 
+    /// The extension judges sites the same way (`siteOf` in `extension/shared.js`): same lists.
+    #[test]
+    fn the_extension_knows_the_same_registries_and_shared_hosts() {
+        let shared_js = include_str!("../../../extension/shared.js");
+        let words_of = |declaration: &str, end: &str| -> Vec<String> {
+            let start = shared_js.find(declaration).unwrap_or_else(|| panic!("{declaration} not in shared.js"));
+            let body = &shared_js[start..];
+            let body = &body[..body.find(end).unwrap()];
+            let mut words: Vec<String> = body.split('"').skip(1).step_by(2).flat_map(str::split_whitespace).map(str::to_owned).collect();
+            words.sort();
+            words
+        };
+
+        let sorted = |list: &[&str]| {
+            let mut words: Vec<String> = list.iter().map(|w| (*w).to_owned()).collect();
+            words.sort();
+            words
+        };
+
+        let registries = words_of("const REGISTRY_SECOND_LEVELS", ".split(");
+        let shared = words_of("const SHARED_HOSTS", ").split(");
+
+        assert_eq!(registries, sorted(&REGISTRY_SECOND_LEVELS));
+        assert_eq!(shared, sorted(&SHARED_HOSTS));
+    }
+
     #[test]
     fn credentials_stay_on_their_site() {
         let mut h = HeaderMap::new();

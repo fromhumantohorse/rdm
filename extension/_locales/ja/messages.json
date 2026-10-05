@@ -6,6 +6,7 @@
   "sent": { "message": "✓ RDM に送信しました" },
   "sentName": { "message": "✓ RDM に送信しました：$1" },
   "noAnswer": { "message": "✗ RDM が応答しませんでした：ブラウザーがこのダウンロードを保持します" },
+  "busy": { "message": "✗ RDM で応答待ちのダウンロードが多すぎます：ブラウザーがこのダウンロードを保持します" },
   "notRunning": { "message": "✗ RDM が起動していません：RDM を開いてからもう一度お試しください" },
   "notRunningShort": { "message": "✗ RDM が起動していません" },
   "notWeb": { "message": "✗ このリンクはページの外ではダウンロードできません（Web アドレスではありません）" },
