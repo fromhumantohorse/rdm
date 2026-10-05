@@ -1,10 +1,10 @@
 //! Atoms: small, stateless building blocks, painted to the design system (`theme`).
 
-use std::f32::consts::TAU;
+use std::{f32::consts::TAU, sync::Arc};
 
 use eframe::egui::{
-    Align, Align2, Color32, CornerRadius, Id, Layout, Margin, Mesh, Painter, Pos2, Rect, Response, RichText, Sense,
-    Shadow, Shape, Stroke, TextEdit, TextFormat, Ui, UiBuilder, Vec2,
+    Align, Align2, Color32, CornerRadius, Galley, Id, Layout, Margin, Mesh, Painter, Pos2, Rect, Response, RichText,
+    Sense, Shadow, Shape, Stroke, TextEdit, TextFormat, Ui, UiBuilder, Vec2,
     epaint::{PathStroke, RectShape, TessellationOptions, Tessellator},
     pos2,
     text::LayoutJob,
@@ -181,7 +181,7 @@ fn hover_anim(ui: &Ui, response: &Response) -> f32 {
 /// Round, frameless icon button; `tint` colours its hover halo and glyph.
 pub fn icon_button(ui: &mut Ui, glyph: &str, tooltip: &str, tint: Option<Color32>) -> Response {
     let p = Palette::of(ui);
-    let (rect, response) = ui.allocate_exact_size(Vec2::splat(32.0), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(ICON_BUTTON), Sense::click());
     let hover = hover_anim(ui, &response);
     let tint = tint.unwrap_or(p.accent);
     let painter = ui.painter();
@@ -193,11 +193,24 @@ pub fn icon_button(ui: &mut Ui, glyph: &str, tooltip: &str, tint: Option<Color32
     response.on_hover_text(tooltip)
 }
 
+/// Room taken by an [`icon_button`].
+pub const ICON_BUTTON: f32 = 32.0;
+const ACCENT_PADDING: f32 = 34.0;
+
+fn accent_label(ui: &Ui, glyph: &str, label: &str) -> Arc<Galley> {
+    ui.painter().layout_no_wrap(format!("{glyph}  {label}"), theme::semibold(14.0), Color32::WHITE)
+}
+
+/// Width an [`accent_button`] with this glyph and label takes.
+pub fn accent_button_width(ui: &Ui, glyph: &str, label: &str) -> f32 {
+    accent_label(ui, glyph, label).size().x + ACCENT_PADDING
+}
+
 /// The primary action: brand gradient, soft coloured glow.
 pub fn accent_button(ui: &mut Ui, glyph: &str, label: &str) -> Response {
     let p = Palette::of(ui);
-    let galley = ui.painter().layout_no_wrap(format!("{glyph}  {label}"), theme::semibold(14.0), Color32::WHITE);
-    let (rect, response) = ui.allocate_exact_size(vec2(galley.size().x + 34.0, 38.0), Sense::click());
+    let galley = accent_label(ui, glyph, label);
+    let (rect, response) = ui.allocate_exact_size(vec2(galley.size().x + ACCENT_PADDING, 38.0), Sense::click());
     let hover = hover_anim(ui, &response);
     let painter = ui.painter();
     let glow = Shadow { offset: [0, 6], blur: 20, spread: 0, color: p.accent.gamma_multiply(0.30 + 0.25 * hover) };

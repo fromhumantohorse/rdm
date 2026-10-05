@@ -46,14 +46,14 @@ impl Toasts {
             return false;
         }
         let p = Palette::from_ctx(ctx);
-        let screen = ctx.screen_rect();
+        let screen = ctx.content_rect();
         let mut bottom = screen.bottom() - 22.0;
         for (i, toast) in self.0.iter().enumerate().rev() {
             let age = toast.born.elapsed().as_secs_f32();
             let left = LIFETIME.as_secs_f32() - age;
             let alpha = (age / FADE).min(left / FADE).clamp(0.0, 1.0);
             let color = if toast.warning { p.warning } else { p.accent };
-            let galley = ctx.fonts(|f| f.layout_no_wrap(toast.text.clone(), theme::regular(13.5), p.text.gamma_multiply(alpha)));
+            let galley = ctx.fonts_mut(|f| f.layout_no_wrap(toast.text.clone(), theme::regular(13.5), p.text.gamma_multiply(alpha)));
             let size = vec2(galley.size().x + 64.0, 46.0);
             let slide = (1.0 - alpha) * 16.0;
             let rect = Rect::from_min_size(pos2(screen.right() - 24.0 - size.x + slide, bottom - size.y), size);

@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+publish.workspace = true
 
 [dependencies]
 domain.workspace = true
@@ -16,8 +17,8 @@ thiserror.workspace = true
 url.workspace = true
 percent-encoding = "2"
 serde.workspace = true
-aes = "0.8"
-cbc = { version = "0.1", features = ["alloc"] }
+aes = "0.9"
+cbc = { version = "0.2", features = ["alloc"] }
 memmap2 = "0.9"
 # HTTP dates (already in the tree through hyper): telling a file's date from "now".
 httpdate = "1"

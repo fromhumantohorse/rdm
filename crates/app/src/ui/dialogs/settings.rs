@@ -87,7 +87,7 @@ impl App<'_> {
             ui.add_space(14.0);
             // As tall as the window allows; without the minimum, the area would keep the height
             // available when the dialog first appeared (from the screen's middle down).
-            let height = (ctx.screen_rect().height() - 270.0).max(240.0);
+            let height = (ctx.content_rect().height() - 270.0).max(240.0);
             let update_state = self.manager.update_state();
             let action = ScrollArea::vertical()
                 .id_salt(tab) // each tab keeps its own scroll position

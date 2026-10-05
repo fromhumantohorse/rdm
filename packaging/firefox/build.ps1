@@ -16,7 +16,9 @@ Remove-Item (Join-Path $Out 'test') -Recurse -Force -ErrorAction SilentlyContinu
 $manifest = [IO.File]::ReadAllText((Join-Path $src 'manifest.json'))
 $manifest = $manifest.Replace('"service_worker": "background.js"', '"scripts": ["background.js"]')
 $manifest = $manifest -replace '(?m)^  "(key|minimum_chrome_version)":.*\r?\n', ''
+$manifest = $manifest.Replace('"webRequest",', '"webRequest", "webRequestBlocking",')
 if (-not $manifest.Contains('"scripts": ["background.js"]')) { throw 'background entry not found in extension\manifest.json' }
+if (-not $manifest.Contains('"webRequestBlocking"')) { throw 'webRequest permission not found in extension\manifest.json' }
 # UTF-8 without BOM, like the source.
 [IO.File]::WriteAllText((Join-Path $Out 'manifest.json'), $manifest, (New-Object Text.UTF8Encoding $false))
 

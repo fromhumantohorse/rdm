@@ -57,6 +57,10 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo install cargo-audit --version 0.22.2 --locked && cargo audit
 
+      - name: Dependency policy (licenses, sources, advisories)
+        if: runner.os == 'Linux'
+        run: cargo install cargo-deny --version 0.20.2 --locked && cargo deny check
+
       - name: Debian package
         if: runner.os == 'Linux'
         run: cargo install cargo-deb --version 3.8.0 --locked && cargo deb -p rdm --no-build
@@ -77,16 +81,8 @@ jobs:
           Expand-Archive $zip "$env:LOCALAPPDATA\Programs\wix3"
           powershell -ExecutionPolicy Bypass -File packaging/windows/build-msi.ps1 -NoBuild
 
-      # Release Firefox installs only packages signed by Mozilla. With the repository secrets
-      # AMO_JWT_ISSUER / AMO_JWT_SECRET (free addons.mozilla.org account, "unlisted": nothing is
-      # published), tagged builds get a signed .xpi, which RDM installs for good in one click — and
-      # the extension's ID is then Mozilla-registered to this project (no one else can sign an
-      # extension under it, which RDM's native connector trusts).
       - name: Stage
         shell: bash
-        env:
-          AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
-          AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
         run: |
           mkdir dist
           if [ "$RUNNER_OS" = Windows ]; then
@@ -97,13 +93,7 @@ jobs:
             tar -czf dist/rdm-linux-x64.tar.gz rdm-linux-x64
             cp target/debian/*.deb target/generate-rpm/*.rpm dist/
             cp target/rdm-chromium.zip dist/
-            if [ -n "$AMO_JWT_ISSUER" ] && [ -n "$AMO_JWT_SECRET" ] && [ "${GITHUB_REF#refs/tags/v}" != "$GITHUB_REF" ]; then
-              packaging/web-ext/node_modules/.bin/web-ext sign --channel=unlisted --source-dir target/firefox --artifacts-dir target/signed \
-                --api-key "$AMO_JWT_ISSUER" --api-secret "$AMO_JWT_SECRET"
-              cp target/signed/*.xpi dist/rdm-firefox.xpi
-            else
-              (cd target/firefox && zip -qr ../../dist/rdm-firefox.xpi .)
-            fi
+            (cd target/firefox && zip -qr ../../dist/rdm-firefox.xpi .)
           fi
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -111,12 +101,51 @@ jobs:
           name: ${{ matrix.artifact }}
           path: dist
 
+  # Tags only. Release Firefox installs only packages signed by Mozilla: with the repository secrets
+  # AMO_JWT_ISSUER / AMO_JWT_SECRET (free addons.mozilla.org account, "unlisted": nothing is
+  # published), the .xpi is signed here, and the extension's ID is then Mozilla-registered to this
+  # project (no one else can sign an extension under it, which RDM's native connector trusts). The
+  # keys never reach the build job: no build script or package of the build can read them. Only
+  # web-ext runs next to them, pinned with its whole dependency tree, its install scripts off.
+  sign-firefox:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: rdm-linux
+          path: unsigned
+      - name: Sign the Firefox package
+        env:
+          AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
+          AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        run: |
+          if [ -z "$AMO_JWT_ISSUER" ] || [ -z "$AMO_JWT_SECRET" ]; then
+            echo "::notice::AMO keys not set: the release ships the unsigned Firefox package"
+            exit 0
+          fi
+          npm ci --ignore-scripts --no-audit --no-fund --prefix packaging/web-ext
+          unzip -q unsigned/rdm-firefox.xpi -d firefox
+          packaging/web-ext/node_modules/.bin/web-ext sign --channel=unlisted --source-dir firefox --artifacts-dir signed \
+            --api-key "$AMO_JWT_ISSUER" --api-secret "$AMO_JWT_SECRET"
+          mkdir out
+          cp signed/*.xpi out/rdm-firefox.xpi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: hashFiles('out/rdm-firefox.xpi') != ''
+        with:
+          name: rdm-firefox-signed
+          path: out
+
   # Tags only: signs the update packages and publishes the release. Apart from the pinned checkout
   # and artifact download, it runs openssl and gh (both part of the runner): no tool fetched from a
   # registry and no build script ever runs next to the signing key, so none of them can alter a
   # package between its signature and its publication.
   release:
-    needs: build
+    needs: [build, sign-firefox]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -127,8 +156,15 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          path: dist
-          merge-multiple: true
+          path: artifacts
+
+      - name: Collect the packages (the signed Firefox package replaces the unsigned one)
+        run: |
+          mkdir dist
+          cp artifacts/rdm-windows/* artifacts/rdm-linux/* dist/
+          if [ -f artifacts/rdm-firefox-signed/rdm-firefox.xpi ]; then
+            cp artifacts/rdm-firefox-signed/rdm-firefox.xpi dist/rdm-firefox.xpi
+          fi
 
       - name: Every package is there
         run: |

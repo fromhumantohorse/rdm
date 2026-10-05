@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 
-use aes::cipher::{BlockDecryptMut, KeyIvInit, block_padding::Pkcs7};
+use aes::cipher::{BlockModeDecrypt, KeyIvInit, block_padding::Pkcs7};
 use futures_util::{StreamExt, stream};
 use reqwest::{Client, header::HeaderMap};
 use serde::{Deserialize, Serialize};
@@ -480,11 +480,15 @@ async fn fetch_part<'b>(http: &Http<'_>, part: Part, budget: (&'b Budget, usize)
         }
     };
     let iv = key.iv.unwrap_or_else(|| u128::from(part.seq).to_be_bytes());
-    let plain = cbc::Decryptor::<aes::Aes128>::new_from_slices(&secret, &iv)
+    Ok((decrypt(&secret, &iv, &data)?, held))
+}
+
+/// AES-128-CBC with PKCS#7 padding, as HLS encrypts segments (`EXT-X-KEY:METHOD=AES-128`).
+fn decrypt(key: &[u8], iv: &[u8; 16], data: &[u8]) -> Result<Vec<u8>, EngineError> {
+    cbc::Decryptor::<aes::Aes128>::new_from_slices(key, iv)
         .map_err(|_| EngineError::Playlist("invalid AES key"))?
-        .decrypt_padded_vec_mut::<Pkcs7>(&data)
-        .map_err(|_| EngineError::Playlist("decryption failed"))?;
-    Ok((plain, held))
+        .decrypt_padded_vec::<Pkcs7>(data)
+        .map_err(|_| EngineError::Playlist("decryption failed"))
 }
 
 /// GET with retries, an optional (offset, length) byte range and a hard size cap. A segment's
@@ -711,6 +715,29 @@ mod tests {
         assert!(went_on.is_ok(), "now the next to write");
         drop(later);
         assert_eq!(budget.held.load(Acquire), 0, "everything given back");
+    }
+
+    /// Known answer from the `cbc` crate's documentation: AES-128-CBC, PKCS#7 padding.
+    #[test]
+    fn decrypts_an_aes_128_segment() {
+        let (key, iv) = ([0x42u8; 16], [0x24u8; 16]);
+        let segment = [
+            0xc7, 0xfe, 0x24, 0x7e, 0xf9, 0x7b, 0x21, 0xf0, 0x7c, 0xbd, 0xd2, 0x6c, 0xb5, 0xd3, 0x46, 0xbf, 0xd2, 0x78, 0x67, 0xcb,
+            0x00, 0xd9, 0x48, 0x67, 0x23, 0xe1, 0x59, 0x97, 0x8f, 0xb9, 0xa5, 0xf9, 0x14, 0xcf, 0xb2, 0x28, 0xa7, 0x10, 0xde, 0x41,
+            0x71, 0xe3, 0x96, 0xe7, 0xb6, 0xcf, 0x85, 0x9e,
+        ];
+
+        let plain = decrypt(&key, &iv, &segment).unwrap();
+
+        assert_eq!(plain, b"hello world! this is my plaintext.");
+    }
+
+    #[test]
+    fn a_wrong_key_or_a_short_key_is_an_error_not_garbage() {
+        let segment = [0u8; 32];
+
+        assert!(matches!(decrypt(&[0x42; 16], &[0; 16], &segment), Err(EngineError::Playlist("decryption failed"))));
+        assert!(matches!(decrypt(&[0x42; 8], &[0; 16], &segment), Err(EngineError::Playlist("invalid AES key"))));
     }
 
     #[test]

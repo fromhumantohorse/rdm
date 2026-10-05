@@ -55,7 +55,7 @@ impl App<'_> {
             ui.add_space(14.0);
             // As tall as the window allows (see the settings dialog: without the minimum, the area
             // keeps the height it had when the dialog first appeared).
-            let height = (ctx.screen_rect().height() - 220.0).max(260.0);
+            let height = (ctx.content_rect().height() - 220.0).max(260.0);
             ScrollArea::vertical().min_scrolled_height(height).max_height(height).auto_shrink([false, true]).show(ui, |ui| {
                 for (browser, exe) in &state.found {
                     self.browser_row(ui, &p, *browser, exe.as_deref(), &mut state.open, &mut copied);

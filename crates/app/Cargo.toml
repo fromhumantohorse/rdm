@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+publish.workspace = true
 
 [dependencies]
 domain.workspace = true
@@ -12,11 +13,11 @@ tokio = { workspace = true, features = ["signal", "process"] }
 serde.workspace = true
 serde_json.workspace = true
 url.workspace = true
-eframe = { version = "0.32", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
+eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
 # The event loop eframe runs on (same version as eframe's): RDM owns it, see `ui::run`.
 winit = { version = "0.30", default-features = false }
 # Vector icon font (MIT), matching egui 0.32.
-egui-phosphor = { version = "0.10", default-features = false, features = ["regular"] }
+egui-phosphor = { version = "0.14", default-features = false, features = ["regular"] }
 # VirusTotal uploads (multipart, streamed from disk).
 reqwest = { workspace = true, features = ["multipart"] }
 tokio-util = { workspace = true, features = ["io"] }
@@ -27,12 +28,12 @@ directories = "6"
 rfd = "0.15"
 opener = { version = "0.8", features = ["reveal"] }
 sha2 = "0.11"
-md-5 = "0.11"
+md5 = { package = "md-5", version = "0.11" }
 sha1 = "0.11"
 # YouTube module (see `ytdlp`): Deno and bgutil come as zip archives.
 zip = { version = "8", default-features = false, features = ["deflate"] }
 # Update packages are signed (Ed25519) by the release workflow; RDM checks before installing.
-ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+ed25519-dalek = { version = "3", default-features = false }
 # yt-dlp's signed checksums (RSA, see `openpgp`): the TLS stack's own crypto library, no new code.
 ring = "0.17"
 # Interface language from the system.
@@ -46,7 +47,7 @@ tray-icon = { version = "0.25", default-features = false, features = ["ksni"] }
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"
 raw-window-handle = "0.6"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_Security", "Win32_Security_Cryptography", "Win32_System_DataExchange", "Win32_System_RemoteDesktop", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_Security", "Win32_Security_Cryptography", "Win32_System_Console", "Win32_System_DataExchange", "Win32_System_RemoteDesktop", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

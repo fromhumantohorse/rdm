@@ -184,6 +184,7 @@ Not supported: DRM content (Netflix, Widevine, FairPlay) and merging WebM stream
 ```sh
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+cargo deny check                  # dependencies: advisories, licenses, sources (cargo install cargo-deny)
 cargo build --release
 sh extension/test/check.sh        # extension (Node ≥ 20), manifests, translations, Chromium and Firefox packages
 ```
@@ -212,4 +213,4 @@ The script installs the build tools and, if needed, Rust (rustup), builds RDM, i
 
 Icons: the two vector sources are in `crates/app/assets/icon/` (`rdm-small.svg`, bolder, is used up to 32 px). `python3 packaging/icons/render.py` regenerates every size: Windows `.ico`, Linux icons (16 to 512 px + SVG), the extension's icons, the window and notification-area images.
 
-The GitHub CI (`.github/workflows/release.yml`) builds, lints, tests (Rust and extension, `web-ext lint` for Firefox), audits dependencies, then produces the Windows and Linux binaries, the `.deb`, the `.rpm`, `rdm-chromium.zip` and `rdm-firefox.xpi` (signed by Mozilla when the AMO keys are set), and signs the update packages (secret `RDM_SIGNING_KEY`) in a separate job that runs nothing but `openssl` and `gh`: no build tool or package from a registry ever runs next to the key. Actions are pinned to commits and tools to exact versions (`web-ext`, which signs the Firefox package, with its whole dependency tree: `packaging/web-ext/package-lock.json`); only that release job may write to the repository.
+The GitHub CI (`.github/workflows/release.yml`) builds, lints, tests (Rust and extension, `web-ext lint` for Firefox), audits dependencies (`cargo audit`, and `cargo deny` for licenses, sources and advisories: `deny.toml`), then produces the Windows and Linux binaries, the `.deb`, the `.rpm`, `rdm-chromium.zip` and `rdm-firefox.xpi`. The Firefox package is signed by Mozilla, when the AMO keys are set, in a job of its own that runs nothing but `web-ext`; the update packages are signed (secret `RDM_SIGNING_KEY`) in another that runs nothing but `openssl` and `gh`: no build tool, build script or other package from a registry ever runs next to a key. Actions are pinned to commits and tools to exact versions (`web-ext`, which signs the Firefox package, with its whole dependency tree: `packaging/web-ext/package-lock.json`); only the release job may write to the repository.

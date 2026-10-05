@@ -2,21 +2,25 @@
 //! and the dashboard (current speed, last minute's chart).
 
 use eframe::egui::{
-    Align, Align2, Color32, Context, Frame, Id, Image, Layout, Margin, Rect, RichText, Sense, SidePanel, Stroke,
-    StrokeKind, TopBottomPanel, Ui, UiBuilder, Vec2, pos2, vec2,
+    Align, Align2, Color32, Context, Frame, Id, Image, Layout, Margin, Panel, Rect, RichText, Sense, Stroke, StrokeKind,
+    Ui, UiBuilder, Vec2, pos2, vec2,
 };
 use egui_phosphor::regular as icon;
 
 use super::{
     ADD_ID, Action, App, Filter, NAV, SEARCH_ID, STATUS_FILTERS,
     theme::{self, Palette},
-    widgets::{self, accent_button, caption, field, icon_button, speed},
+    widgets::{self, ICON_BUTTON, accent_button, accent_button_width, caption, field, icon_button, speed},
 };
 use crate::{manager::Stats, settings::Theme, tr, trf, update};
 
+const HEADER_GAP: f32 = 10.0;
+const SEARCH_WIDTH: f32 = 240.0;
+const MIN_ADD_WIDTH: f32 = 200.0;
+
 impl App<'_> {
-    pub(super) fn sidebar(&mut self, ctx: &Context, actions: &mut Vec<Action>) {
-        let p = Palette::from_ctx(ctx);
+    pub(super) fn sidebar(&mut self, root: &mut Ui, actions: &mut Vec<Action>) {
+        let p = Palette::of(root);
         // One pass over the whole history per frame, whatever its length.
         let counts = self.manager.view(|es| {
             let mut counts = [0usize; NAV.len()];
@@ -46,7 +50,7 @@ impl App<'_> {
         if matches!(self.memo.filter, Filter::Queue(q) if q != 0 && !named.iter().any(|x| x.id == q)) {
             self.memo.filter = Filter::All; // its queue was deleted
         }
-        SidePanel::left("nav").exact_width(240.0).resizable(false).frame(frame).show(ctx, |ui| {
+        Panel::left("nav").exact_size(240.0).resizable(false).frame(frame).show(root, |ui| {
             self.brand(ui, &p);
             ui.add_space(24.0);
             // The filters scroll if the window is short; the cards below always stay visible.
@@ -175,19 +179,23 @@ impl App<'_> {
         response.on_hover_text(tr!("Modifier dans les paramètres", "Change in the settings"))
     }
 
-    pub(super) fn header(&mut self, ctx: &Context) {
-        TopBottomPanel::top("header")
-            .exact_height(74.0)
+    pub(super) fn header(&mut self, root: &mut Ui) {
+        let ctx = root.ctx().clone();
+        Panel::top("header")
+            .exact_size(74.0)
             .frame(Frame::new().inner_margin(Margin { left: 26, right: 22, top: 18, bottom: 14 }))
             .show_separator_line(false)
-            .show(ctx, |ui| {
+            .show(root, |ui| {
                 ui.horizontal_centered(|ui| {
-                    ui.spacing_mut().item_spacing.x = 10.0;
-                    let right = 250.0 + 2.0 * 32.0 + 40.0;
-                    let add_width = (ui.available_width() - right - 170.0).max(200.0);
+                    let gap = HEADER_GAP;
+                    ui.spacing_mut().item_spacing.x = gap;
+                    let download = tr!("Télécharger", "Download");
+                    let search_block = SEARCH_WIDTH + 2.0 * (gap + ICON_BUTTON);
+                    let button = accent_button_width(ui, icon::DOWNLOAD_SIMPLE, download);
+                    let add_width = (ui.available_width() - button - search_block - 2.0 * gap).max(MIN_ADD_WIDTH);
                     let add = field(ui, Id::new(ADD_ID), &mut self.memo.url, tr!("Collez un ou plusieurs liens à télécharger…", "Paste one or more links to download…"), icon::LINK, add_width);
                     let enter = add.lost_focus() && ui.input(|i| i.key_pressed(eframe::egui::Key::Enter));
-                    if (accent_button(ui, icon::DOWNLOAD_SIMPLE, tr!("Télécharger", "Download")).clicked() || enter) && !self.memo.url.trim().is_empty() {
+                    if (accent_button(ui, icon::DOWNLOAD_SIMPLE, download).clicked() || enter) && !self.memo.url.trim().is_empty() {
                         let text = std::mem::take(&mut self.memo.url);
                         if self.submit(&text) == 0 {
                             self.memo.url = text;
@@ -201,9 +209,9 @@ impl App<'_> {
                         let (glyph, tip, next) =
                             if dark { (icon::SUN, tr!("Thème clair", "Light theme"), Theme::Light) } else { (icon::MOON, tr!("Thème sombre", "Dark theme"), Theme::Dark) };
                         if icon_button(ui, glyph, tip, None).clicked() {
-                            self.set_theme(ctx, next);
+                            self.set_theme(&ctx, next);
                         }
-                        field(ui, Id::new(SEARCH_ID), &mut self.memo.search, tr!("Rechercher  (Ctrl+F)", "Search  (Ctrl+F)"), icon::MAGNIFYING_GLASS, 240.0);
+                        field(ui, Id::new(SEARCH_ID), &mut self.memo.search, tr!("Rechercher  (Ctrl+F)", "Search  (Ctrl+F)"), icon::MAGNIFYING_GLASS, SEARCH_WIDTH);
                     });
                 });
             });

@@ -77,7 +77,7 @@ impl Palette {
     }
 
     pub fn from_ctx(ctx: &Context) -> Self {
-        if ctx.style().visuals.dark_mode { DARK } else { LIGHT }
+        if ctx.global_style().visuals.dark_mode { DARK } else { LIGHT }
     }
 
     /// Each category has its hue: tiles, sidebar dots.
@@ -239,9 +239,9 @@ mod tests {
             i18n::set(language);
             install_fonts(&ctx);
             // The fonts change at the start of the next frame.
-            let _ = ctx.run(RawInput::default(), |_| {});
+            ctx.run_ui(RawInput::default(), |_| {}).textures_delta.clear();
             let families = [FontFamily::Proportional, SEMIBOLD.clone(), BOLD.clone()];
-            ctx.fonts(|fonts| {
+            ctx.fonts_mut(|fonts| {
                 let name = language.native_name();
                 let texts = language.table().values().copied().chain([name]);
                 for text in texts.flat_map(|t| t.split(['\n', '|'])) {

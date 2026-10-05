@@ -238,7 +238,8 @@ fn open_window(
     if let Some((position, _)) = memo.position.filter(|&(p, ppp)| window::on_screen(p.x * ppp, p.y * ppp)) {
         viewport = viewport.with_position(position);
     }
-    let options = eframe::NativeOptions { viewport, vsync: !paced, ..Default::default() };
+    let mut options = eframe::NativeOptions { viewport, ..Default::default() };
+    options.glow_options.vsync = !paced;
     let mut created = false;
     let opened = &mut created;
     let mut app = eframe::create_native(
@@ -419,7 +420,7 @@ impl Memo {
             return;
         }
         self.maximized = maximized;
-        let size = ctx.screen_rect().size();
+        let size = ctx.viewport_rect().size();
         if !maximized && size.x >= MIN_SIZE.x && size.y >= MIN_SIZE.y {
             self.size = Some(size);
             self.position = outer.map(|r| (r.min, ctx.pixels_per_point()));
@@ -655,9 +656,10 @@ impl<'a> App<'a> {
 }
 
 impl eframe::App for App<'_> {
-    fn update(&mut self, ctx: &Context, _: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
+        let ctx = &ui.ctx().clone();
         // The title bar follows the theme (chosen, or the system's when it changes).
-        let dark = ctx.style().visuals.dark_mode;
+        let dark = ctx.global_style().visuals.dark_mode;
         if self.title_bar_dark != Some(dark) {
             self.title_bar_dark = Some(dark);
             let p = Palette::from_ctx(ctx);
@@ -687,11 +689,11 @@ impl eframe::App for App<'_> {
             }
         }
         backdrop(ctx);
-        self.sidebar(ctx, &mut actions);
-        self.header(ctx);
+        self.sidebar(ui, &mut actions);
+        self.header(ui);
         CentralPanel::default()
             .frame(Frame::new().inner_margin(Margin { left: 26, right: 26, top: 6, bottom: 0 }))
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 self.dashboard(ui, stats);
                 self.clipboard_banner(ui);
                 self.list(ui, &mut actions);
@@ -743,7 +745,7 @@ impl eframe::App for App<'_> {
 /// Window background: the base colour and two soft lights of the brand gradient ("aurora").
 fn backdrop(ctx: &Context) {
     let p = Palette::from_ctx(ctx);
-    let screen = ctx.screen_rect();
+    let screen = ctx.viewport_rect();
     let painter = ctx.layer_painter(LayerId::background());
     painter.rect_filled(screen, 0, p.bg);
     let strength = if p.dark { 0.13 } else { 0.10 };
