@@ -13,10 +13,6 @@ impl Segment {
         Self { start, pos: start, end }
     }
 
-    pub const fn remaining(&self) -> u64 {
-        self.end.saturating_add(1).saturating_sub(self.pos)
-    }
-
     pub const fn is_done(&self) -> bool {
         self.pos > self.end
     }

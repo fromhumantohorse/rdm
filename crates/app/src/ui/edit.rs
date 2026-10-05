@@ -196,27 +196,7 @@ impl App<'_> {
 /// The file name a link points to, for display.
 fn file_name(url: &Url) -> String {
     let last = url.path_segments().and_then(|mut s| s.next_back()).filter(|s| !s.is_empty()).unwrap_or(url.as_str());
-    percent_decode(last)
-}
-
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        let hex = |b: u8| char::from(b).to_digit(16);
-        match (bytes[i], bytes.get(i + 1).copied().and_then(hex), bytes.get(i + 2).copied().and_then(hex)) {
-            (b'%', Some(h), Some(l)) => {
-                out.push((h * 16 + l) as u8);
-                i += 3;
-            }
-            (b, ..) => {
-                out.push(b);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
+    percent_encoding::percent_decode_str(last).decode_utf8_lossy().into_owned()
 }
 
 #[cfg(test)]
@@ -227,6 +207,6 @@ mod tests {
     fn shows_the_file_name_of_a_link() {
         assert_eq!(file_name(&"https://x.io/dir/My%20File.zip?x=1".parse().unwrap()), "My File.zip");
         assert_eq!(file_name(&"https://x.io/".parse().unwrap()), "https://x.io/");
-        assert_eq!(percent_decode("%E2%82%AC%zz"), "€%zz");
+        assert_eq!(file_name(&"https://x.io/%E2%82%AC%zz".parse().unwrap()), "€%zz", "a malformed escape stays as typed");
     }
 }

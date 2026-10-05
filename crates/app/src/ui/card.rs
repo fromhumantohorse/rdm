@@ -200,7 +200,7 @@ fn card(ui: &mut Ui, p: &Palette, queues: &[Queue], e: &Entry, actions: &mut Vec
     let bar_fraction = if *status == Status::Completed { Some(1.0) } else if running { shown } else { shown.or(Some(0.0)) };
     // Running over several connections: one piece of the bar per connection. Past a few dozen
     // pieces the bar would be only gaps: the plain bar then.
-    let pieces = if running && total > 0 { widgets::merge_finished(e.progress.pieces()) } else { Vec::new() };
+    let pieces = if running && total > 0 { e.progress.pieces() } else { Vec::new() };
     if (2..=MAX_SHOWN_PIECES).contains(&pieces.len()) {
         widgets::pieces_progress(ui, bar, &pieces, total, gradient);
     } else {

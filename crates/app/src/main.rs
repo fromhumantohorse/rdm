@@ -3,6 +3,7 @@
 mod autostart;
 mod bridge;
 mod extension;
+mod hex;
 mod i18n;
 mod local;
 mod manager;

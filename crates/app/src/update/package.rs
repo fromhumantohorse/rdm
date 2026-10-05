@@ -3,28 +3,8 @@
 
 use super::*;
 
-
 /// Public half of the key the release workflow signs packages with (Ed25519, raw 32 bytes).
-const PUBLIC_KEY: [u8; 32] = hex32("a972e3ab906c230c0e1c96b750e0c7d2abeae96c5979f9c48085853506b9b135");
-
-const fn hex32(s: &str) -> [u8; 32] {
-    const fn nibble(c: u8) -> u8 {
-        match c {
-            b'0'..=b'9' => c - b'0',
-            b'a'..=b'f' => c - b'a' + 10,
-            _ => panic!("bad hex"),
-        }
-    }
-    let b = s.as_bytes();
-    assert!(b.len() == 64);
-    let mut out = [0u8; 32];
-    let mut i = 0;
-    while i < 32 {
-        out[i] = nibble(b[2 * i]) << 4 | nibble(b[2 * i + 1]);
-        i += 1;
-    }
-    out
-}
+const PUBLIC_KEY: [u8; 32] = crate::hex::decode("a972e3ab906c230c0e1c96b750e0c7d2abeae96c5979f9c48085853506b9b135");
 
 /// A package downloaded and checked, and the SHA-256 its signature covers: the installation
 /// checks the file against it again, at the last moment (see `install`).
@@ -138,7 +118,7 @@ async fn fetch(client: &reqwest::Client, version: &str, package: &Package, path:
     if total > 0 && received != total {
         return Err(Retry(tr!("paquet incomplet", "incomplete package").into()));
     }
-    let digest = crate::manager::checksum::hex(&hash.finalize());
+    let digest = crate::hex::encode(&hash.finalize());
     if package.sha256.as_ref().is_some_and(|expected| *expected != digest) {
         return Err(Retry(tr!("paquet corrompu (empreinte SHA-256 différente)", "corrupted package (SHA-256 mismatch)").into()));
     }

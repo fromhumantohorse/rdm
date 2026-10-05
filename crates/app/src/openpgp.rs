@@ -78,26 +78,6 @@ fn signature_body(packet: &[u8]) -> Option<&[u8]> {
     rest.get(..len)
 }
 
-/// `N` bytes from `2 × N` lower-case hexadecimal digits (keys written in the source).
-pub const fn hex<const N: usize>(s: &str) -> [u8; N] {
-    const fn nibble(c: u8) -> u8 {
-        match c {
-            b'0'..=b'9' => c - b'0',
-            b'a'..=b'f' => c - b'a' + 10,
-            _ => panic!("bad hex"),
-        }
-    }
-    let b = s.as_bytes();
-    assert!(b.len() == 2 * N);
-    let mut out = [0u8; N];
-    let mut i = 0;
-    while i < N {
-        out[i] = nibble(b[2 * i]) << 4 | nibble(b[2 * i + 1]);
-        i += 1;
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,7 +123,7 @@ mod tests {
         let body = [&[4u8, 0x63, 0xfb, 0xf0, 0x2e, 1][..], &mpi(key.n), &mpi(key.e)].concat();
         let len = u16::try_from(body.len()).unwrap().to_be_bytes();
         let fingerprint = Sha1::digest([&[0x99, len[0], len[1]][..], &body].concat());
-        assert_eq!(crate::manager::checksum::hex(&fingerprint), "ac0cbbe6848d6a873464af4e57cf65933b5a7581");
+        assert_eq!(crate::hex::encode(&fingerprint), "ac0cbbe6848d6a873464af4e57cf65933b5a7581");
     }
 
     #[test]

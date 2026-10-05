@@ -90,7 +90,7 @@ pub enum EngineError {
 impl EngineError {
     /// Connecting failed: the cached address of that server is forgotten, so the next attempt
     /// resolves its name again (the network changed, a VPN went up, the CDN moved).
-    pub fn forget_address(&self) {
+    pub(crate) fn forget_address(&self) {
         if let Self::Http(e) = self
             && e.is_connect()
             && let Some(url) = e.url()
@@ -100,7 +100,7 @@ impl EngineError {
     }
 
     /// 429 / 503: the server limits concurrent connections.
-    pub fn is_throttled(&self) -> bool {
+    pub(crate) fn is_throttled(&self) -> bool {
         matches!(self, Self::Http(e) if e.status().is_some_and(|s| s.as_u16() == 429 || s.as_u16() == 503))
     }
 
@@ -194,8 +194,8 @@ pub struct Progress {
     pub downloaded: AtomicU64,
     pub total: AtomicU64,
     pub active: AtomicUsize,
-    /// The file's pieces (one per connection, at most) while a segmented transfer runs, a few
-    /// times a second; empty otherwise. For the progress bar.
+    /// The file's pieces while a segmented transfer runs, a few times a second, in file order with
+    /// finished neighbours joined (about one per connection); empty otherwise. For the progress bar.
     pieces: Mutex<Vec<domain::Segment>>,
 }
 
@@ -244,7 +244,7 @@ pub struct ClientOptions {
     /// Accept invalid TLS certificates (a download the user explicitly exempted).
     pub insecure: bool,
     /// A download that starts on the Internet: no connection into the local network, whatever the
-    /// names it meets resolve to ([`net::PublicDns`]). Not through a proxy, which resolves the
+    /// names it meets resolve to (`net::PublicDns`). Not through a proxy, which resolves the
     /// names itself (and may well be on the local network).
     pub public_only: bool,
 }
@@ -258,7 +258,7 @@ pub fn client() -> reqwest::Result<Client> {
 /// - HTTP/1.1 only: HTTP/2 would multiplex every segment onto one TCP stream and kill parallelism;
 /// - no compression: `Content-Encoding` on ranged responses breaks offsets, and media is already compressed;
 /// - kept-alive pool sized for the max connection count, so stolen segments reuse warm TLS sessions;
-/// - names resolved once per minute and shared ([`net::CachedDns`]): 32 connections to one server
+/// - names resolved once per minute and shared (`net::CachedDns`): 32 connections to one server
 ///   cost one DNS lookup, not 32 (a slow resolver no longer delays every connection);
 /// - redirects may not lead from the Internet into the local network (SSRF), and with
 ///   `public_only` no name may resolve into it either.

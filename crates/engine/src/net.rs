@@ -26,7 +26,7 @@ type Entry = (Instant, Arc<[SocketAddr]>);
 /// A DNS cache shared by every client of the engine. The system resolver answers; failures are not
 /// cached (the next connection asks again).
 #[derive(Default)]
-pub struct CachedDns {
+pub(crate) struct CachedDns {
     entries: Mutex<HashMap<String, Entry>>,
 }
 
@@ -96,11 +96,11 @@ impl Resolve for CachedDns {
 /// later (DNS rebinding) — never leads into the local network: literal addresses are checked by
 /// the redirect policy and the playlist reader, names here, at the address actually connected to.
 #[derive(Default)]
-pub struct PublicDns;
+pub(crate) struct PublicDns;
 
 /// Why a name was not resolved: all its addresses are on the local network.
 #[derive(Debug)]
-pub struct LanBlocked(String);
+pub(crate) struct LanBlocked(String);
 
 impl std::fmt::Display for LanBlocked {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -138,7 +138,7 @@ pub async fn reaches_lan(url: &Url) -> bool {
 }
 
 /// Whether an error comes from [`PublicDns`] refusing a local address.
-pub fn is_lan_blocked(err: &(dyn std::error::Error + 'static)) -> bool {
+pub(crate) fn is_lan_blocked(err: &(dyn std::error::Error + 'static)) -> bool {
     let mut source = Some(err);
     while let Some(e) = source {
         if e.is::<LanBlocked>() {
@@ -157,7 +157,7 @@ fn local_ip(ip: IpAddr) -> bool {
 }
 
 /// Drops the cached addresses of `url`'s host (connecting to them failed).
-pub fn forget(url: &Url) {
+pub(crate) fn forget(url: &Url) {
     if let Some(Host::Domain(host)) = url.host() {
         CachedDns::shared().forget(host);
     }
@@ -165,7 +165,7 @@ pub fn forget(url: &Url) {
 
 /// `true` for loopback, private, link-local, CGNAT, unspecified and `.localhost` / `.local` hosts.
 /// Literal hosts only: names are not resolved here (no DNS round-trip on the hot path).
-pub fn is_local(url: &Url) -> bool {
+pub(crate) fn is_local(url: &Url) -> bool {
     match url.host() {
         Some(Host::Ipv4(ip)) => local_v4(ip),
         Some(Host::Ipv6(ip)) => local_v6(ip),
@@ -217,7 +217,7 @@ fn embedded_v4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
 }
 
 /// A hop from `from` to `to` is allowed unless it moves from the Internet into the local network.
-pub fn allowed_hop(from: &Url, to: &Url) -> bool {
+pub(crate) fn allowed_hop(from: &Url, to: &Url) -> bool {
     is_local(from) || !is_local(to)
 }
 
@@ -225,7 +225,7 @@ pub fn allowed_hop(from: &Url, to: &Url) -> bool {
 /// hosts under the same registrable domain — approximated by its last two labels, one more under
 /// a country's registry (`co.uk`) or a hosting platform shared by strangers (`github.io`). An IP
 /// address: that address only.
-pub fn same_site(a: &Url, b: &Url) -> bool {
+pub(crate) fn same_site(a: &Url, b: &Url) -> bool {
     match (a.host(), b.host()) {
         (Some(Host::Domain(x)), Some(Host::Domain(y))) => site(x) == site(y),
         (Some(Host::Ipv4(x)), Some(Host::Ipv4(y))) => x == y,
@@ -270,7 +270,7 @@ fn site(host: &str) -> String {
 /// login) stay within `from`'s site. A playlist may point anywhere: its segments on another site
 /// must not receive them — what browsers do, and what the HTTP client does on redirects. Given
 /// over HTTPS, they never travel in clear either: an `http://` segment of the same site gets none.
-pub fn headers_for<'h>(headers: &'h HeaderMap, from: &Url, to: &Url) -> Cow<'h, HeaderMap> {
+pub(crate) fn headers_for<'h>(headers: &'h HeaderMap, from: &Url, to: &Url) -> Cow<'h, HeaderMap> {
     let credentials = [header::COOKIE, header::AUTHORIZATION, header::PROXY_AUTHORIZATION];
     let downgrade = from.scheme() == "https" && to.scheme() != "https";
     if (same_site(from, to) && !downgrade) || !credentials.iter().any(|h| headers.contains_key(h)) {

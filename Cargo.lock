@@ -3063,6 +3063,7 @@ dependencies = [
  "md-5",
  "notify-rust",
  "opener",
+ "percent-encoding",
  "raw-window-handle",
  "reqwest",
  "rfd",

@@ -331,7 +331,7 @@ fn merge_bytes(video: &[u8], audio: &[u8], out: &mut impl Write) -> Result<(), M
 
 /// Written next to the output, then renamed over it: a failed or interrupted merge never leaves a
 /// truncated file under the final name.
-pub const TMP_SUFFIX: &str = ".mux.tmp";
+pub(crate) const TMP_SUFFIX: &str = ".mux.tmp";
 
 pub fn merge(video: &Path, audio: &Path, out: &Path) -> Result<(), MuxError> {
     // SAFETY: the inputs are our own finished temporary files; nothing else writes to them.

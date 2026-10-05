@@ -40,7 +40,7 @@ const YTDLP_SUMS: &str = "SHA2-256SUMS";
 /// yt-dlp's release signing key (RSA 4096, fingerprint AC0C BBE6 848D 6A87 3464 AF4E 57CF 6593
 /// 3B5A 7581): its repository's `public.key`, unchanged since 2023, the same on keys.openpgp.org.
 pub(crate) const SIGNING_KEY: crate::openpgp::RsaKey = crate::openpgp::RsaKey { n: &YTDLP_MODULUS, e: &[1, 0, 1] };
-const YTDLP_MODULUS: [u8; 512] = crate::openpgp::hex(concat!(
+const YTDLP_MODULUS: [u8; 512] = crate::hex::decode(concat!(
     "f4ac5f738c63c0b74b6196de42d5e6f371c0155fb35bd6ff9ea908e4f961197531135428375803399e002b947766fdf66acd480efa9018ac1eb418a7a0edf7d4",
     "0dff92d1714a11975e44b61e01aaaa2a14a26d56a50e3bce04ecedbb75bad3b1cb113400a80ef04cfb88b765aa9a92fad0d21ccabdbb2f1aa681d37798dbd9da",
     "22cef9b3f49ca47f0be3e013d1f8cadcb00dad76cccc7a3e66429d538e3aee97644166754c71750f5f143a9df4b701298d8b0ce712628d6c698d185a26561edc",
@@ -280,7 +280,7 @@ async fn download(client: &reqwest::Client, url: &str, sha256: Option<&str>) -> 
     if bytes.len() as u64 > MAX_FILE {
         return Err("file abnormally large".into());
     }
-    let digest = crate::manager::checksum::hex(&Sha256::digest(&bytes));
+    let digest = crate::hex::encode(&Sha256::digest(&bytes));
     if sha256.is_some_and(|expected| !expected.eq_ignore_ascii_case(&digest)) {
         return Err(format!("corrupted download (SHA-256 mismatch): {url}"));
     }

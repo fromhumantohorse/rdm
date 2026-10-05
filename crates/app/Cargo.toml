@@ -22,7 +22,8 @@ egui-phosphor = { version = "0.14", default-features = false, features = ["regul
 reqwest = { workspace = true, features = ["multipart"] }
 tokio-util = { workspace = true, features = ["io"] }
 futures-util.workspace = true
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
+percent-encoding.workspace = true
+axum ={ version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
 uuid.workspace = true
 directories = "6"
 rfd = "0.15"
