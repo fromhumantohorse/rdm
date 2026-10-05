@@ -9,7 +9,7 @@ mod segment;
 pub use checksum::{Checksum, HashAlgo};
 pub use download::{Download, DownloadError, DownloadId, Source, Status};
 pub use failure::Failure;
-pub use file_kind::{Category, default_captured, is_capturable};
+pub use file_kind::{CAPTURED_REVISION, Category, captured_since, default_captured, is_capturable};
 pub use segment::{Segment, plan_segments};
 
 pub const DEFAULT_CONNECTIONS: u8 = 32;

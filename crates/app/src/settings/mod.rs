@@ -88,6 +88,10 @@ pub struct Settings {
     pub category_dirs: BTreeMap<Category, PathBuf>,
     /// Extensions the browser extension hands over to RDM (space-separated).
     pub captured: String,
+    /// Revision of the defaults `captured` already includes (`domain::CAPTURED_REVISION`). Absent
+    /// from files written before revisions: 0, so they receive every addition once.
+    #[serde(default)]
+    pub captured_revision: u8,
     /// A download sent by the browser extension waits in RDM's window (brought to the front)
     /// for the user's go-ahead; off: it starts right away.
     pub confirm_browser: bool,
@@ -141,6 +145,7 @@ impl Default for Settings {
             categorize: true,
             category_dirs: BTreeMap::new(),
             captured: domain::default_captured(),
+            captured_revision: domain::CAPTURED_REVISION,
             confirm_browser: true,
             connections: domain::DEFAULT_CONNECTIONS,
             max_parallel: 3,
@@ -195,6 +200,13 @@ impl Settings {
         if self.captured.trim().is_empty() {
             self.captured = domain::default_captured();
         }
+        for ext in domain::captured_since(self.captured_revision) {
+            if !domain::is_capturable(&self.captured, &format!("file.{ext}")) {
+                self.captured.push(' ');
+                self.captured.push_str(ext);
+            }
+        }
+        self.captured_revision = domain::CAPTURED_REVISION;
         self.virustotal_key = self.virustotal_key.trim().to_owned();
         self.proxy.url = self.proxy.url.trim().to_owned();
         // Queue ids: unique, never 0 (the main queue); names trimmed.
@@ -252,6 +264,22 @@ mod tests {
     fn old_settings_files_still_load() {
         let old: Settings = serde_json::from_str(r#"{"download_dir":"x","connections":32}"#).unwrap();
         assert!(old.notify && old.close_to_tray && !old.captured.is_empty());
+    }
+
+    #[test]
+    fn a_list_saved_by_an_older_version_receives_the_new_types_once() {
+        let mut saved: Settings = serde_json::from_str(r#"{"captured":"zip iso"}"#).unwrap();
+
+        saved.sanitize();
+
+        assert!(saved.captured.starts_with("zip iso "), "the user's own list is kept");
+        assert!(domain::is_capturable(&saved.captured, "model.gguf"));
+        assert!(!domain::is_capturable(&saved.captured, "film.mp4"), "a type removed before stays removed");
+
+        saved.captured = "zip iso".into();
+        saved.sanitize();
+
+        assert_eq!(saved.captured, "zip iso", "a new type removed afterwards stays removed");
     }
 
     #[test]

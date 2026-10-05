@@ -70,6 +70,7 @@ pub(super) const NAV: [(Filter, &str); STATUS_FILTERS + Category::ALL.len()] = [
     (Filter::Kind(Category::ALL[3]), category_icon(Category::ALL[3])),
     (Filter::Kind(Category::ALL[4]), category_icon(Category::ALL[4])),
     (Filter::Kind(Category::ALL[5]), category_icon(Category::ALL[5])),
+    (Filter::Kind(Category::ALL[6]), category_icon(Category::ALL[6])),
 ];
 
 pub(super) const fn category_icon(c: Category) -> &'static str {
@@ -79,6 +80,7 @@ pub(super) const fn category_icon(c: Category) -> &'static str {
         Category::Archive => icon::FILE_ZIP,
         Category::Program => icon::APP_WINDOW,
         Category::Document => icon::FILE_TEXT,
+        Category::Model => icon::BRAIN,
         Category::Other => icon::FILE,
     }
 }

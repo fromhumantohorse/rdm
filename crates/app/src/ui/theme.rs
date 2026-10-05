@@ -88,6 +88,7 @@ impl Palette {
             Category::Archive => (0xFACC15, 0xCA8A04),
             Category::Program => (0x60A5FA, 0x2563EB),
             Category::Document => (0x34D399, 0x059669),
+            Category::Model => (0x22D3EE, 0x0891B2),
             Category::Other => (0xA78BFA, 0x7C3AED),
         };
         rgb(if self.dark { dark } else { light })
