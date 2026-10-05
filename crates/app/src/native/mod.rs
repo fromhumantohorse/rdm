@@ -33,6 +33,7 @@ pub use register::register;
 pub const HOST: &str = "rdm.bridge";
 /// The RDM extension, the only one allowed to start the connector.
 const CHROME_ORIGIN: &str = "chrome-extension://cgailhenfaoohkakpdacohcnmppepjjl/";
+const CHROME_STORE_ORIGIN: &str = "chrome-extension://adoaoaomelojpakojcmkaclkhopkeljp/";
 pub(crate) const FIREFOX_ID: &str = "rdm@rdm-download-manager";
 
 /// Browsers cap what a host may send at 1 MiB; requests from the extension are small.

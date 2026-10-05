@@ -6,7 +6,7 @@ use axum::http::{
     header::{HOST, ORIGIN},
 };
 
-use super::EXTENSION_ORIGIN;
+use super::{EXTENSION_ORIGIN, STORE_EXTENSION_ORIGIN};
 use crate::{local, manager::Manager};
 
 /// Sent by the extension: `firefox`, `waterfox`, `chrome`, `brave`, `opera`, `edge` or `chromium`.
@@ -58,7 +58,7 @@ fn guard_with(headers: &HeaderMap, token: &str, access: Access, firefox: impl Fn
         // A local program: only the user's own (it could read the token in the user's files).
         None if !token.is_empty() && local::token_matches(token, headers.get(local::TOKEN_HEADER).map(|v| v.as_bytes())) => Ok(()),
         None => Err(StatusCode::FORBIDDEN),
-        Some(Ok(o)) if o == EXTENSION_ORIGIN => Ok(()),
+        Some(Ok(o)) if o == EXTENSION_ORIGIN || o == STORE_EXTENSION_ORIGIN => Ok(()),
         Some(Ok(o)) if o.starts_with("moz-extension://") => {
             if firefox(o) { Ok(()) } else { Err(StatusCode::UNAUTHORIZED) }
         }
@@ -87,6 +87,7 @@ mod tests {
     fn origin_and_host_rules() {
         let guard = |h: &HeaderMap| guard_with(h, TOKEN, Access::Act, |_| panic!("not a Firefox origin"));
         assert_eq!(guard(&headers(&[("host", "127.0.0.1:9614"), ("origin", EXTENSION_ORIGIN)])), Ok(()));
+        assert_eq!(guard(&headers(&[("host", "127.0.0.1:9614"), ("origin", STORE_EXTENSION_ORIGIN)])), Ok(()));
         assert_eq!(guard(&headers(&[("host", "localhost:9614"), (local::TOKEN_HEADER, TOKEN)])), Ok(()));
         assert_eq!(guard(&headers(&[("host", "127.0.0.1:9614"), ("origin", "https://evil.example")])), FORBIDDEN);
         assert_eq!(guard(&headers(&[("host", "127.0.0.1:9614"), ("origin", "chrome-extension://another")])), FORBIDDEN);

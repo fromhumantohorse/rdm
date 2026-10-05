@@ -39,6 +39,8 @@ pub use running::{forward, quit_running};
 
 /// ID of the RDM extension, derived from the public `key` in `extension/manifest.json`.
 pub const EXTENSION_ORIGIN: &str = "chrome-extension://cgailhenfaoohkakpdacohcnmppepjjl";
+/// The same extension installed from the Chrome Web Store, which signs it with its own key.
+pub const STORE_EXTENSION_ORIGIN: &str = "chrome-extension://adoaoaomelojpakojcmkaclkhopkeljp";
 const MAX_BODY: usize = 64 * 1024;
 const MAX_CHUNK: usize = 32 << 20;
 

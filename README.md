@@ -136,7 +136,9 @@ Privacy: an uploaded file is shared with antivirus vendors. Do not analyse your 
 
 **How the extension reaches RDM**: through RDM's **native messaging connector**, which RDM registers with every browser at start. The browser itself starts the connector, and only for the RDM extension, so no approval is needed — including on Firefox and its derivatives — and **a link sent from a page starts RDM if it is not running**. Browsers that cannot start it (a sandboxed Flatpak or Snap browser) fall back to the local bridge on `127.0.0.1:9614`.
 
-**Chrome, Brave, Opera, Edge, Chromium** (Chromium 121 or later): one and the same extension. On the extensions page → **Developer mode** → **Load unpacked** → the folder RDM shows. Without RDM: `rdm-chromium.zip` from the releases page (or `sh packaging/chromium/build.sh`), extract, then load it the same way. A `.crx` would not help: Chrome, Brave and Edge only install `.crx` files from their store. The extension's ID is fixed (`cgailhenfaoohkakpdacohcnmppepjjl`) and RDM only accepts that one.
+**Chrome, Brave, Opera, Edge, Chromium** (Chromium 121 or later): one and the same extension. On the extensions page → **Developer mode** → **Load unpacked** → the folder RDM shows. Without RDM: `rdm-chromium.zip` from the releases page (or `sh packaging/chromium/build.sh`), extract, then load it the same way. A `.crx` would not help: Chrome, Brave and Edge only install `.crx` files from their store. The extension's ID is fixed (`cgailhenfaoohkakpdacohcnmppepjjl`); RDM accepts that one and the Chrome Web Store's (`adoaoaomelojpakojcmkaclkhopkeljp`, being reviewed).
+
+**Firefox, Waterfox, LibreWolf**: [RDM on addons.mozilla.org](https://addons.mozilla.org/firefox/addon/rdm-rust-download-manager/).
 
 **Firefox** (140 or later) only keeps extensions **signed by Mozilla**.
 

@@ -3,7 +3,7 @@
 
 use std::{io, path::Path};
 
-use super::{CHROME_ORIGIN, FIREFOX_ID, HOST};
+use super::{CHROME_ORIGIN, CHROME_STORE_ORIGIN, FIREFOX_ID, HOST};
 
 /// The host manifest: Chromium-based browsers list allowed origins, Firefox allowed extension IDs.
 fn manifest(exe: &Path, firefox: bool) -> Vec<u8> {
@@ -16,7 +16,7 @@ fn manifest(exe: &Path, firefox: bool) -> Vec<u8> {
     if firefox {
         m["allowed_extensions"] = serde_json::json!([FIREFOX_ID]);
     } else {
-        m["allowed_origins"] = serde_json::json!([CHROME_ORIGIN]);
+        m["allowed_origins"] = serde_json::json!([CHROME_ORIGIN, CHROME_STORE_ORIGIN]);
     }
     serde_json::to_vec_pretty(&m).unwrap_or_default()
 }
@@ -171,6 +171,8 @@ mod tests {
     fn manifests_name_only_the_rdm_extension() {
         let chrome: Value = serde_json::from_slice(&manifest(Path::new("/opt/rdm"), false)).unwrap();
         assert_eq!(chrome["allowed_origins"][0], CHROME_ORIGIN);
+        assert_eq!(chrome["allowed_origins"][1], CHROME_STORE_ORIGIN);
+        assert_eq!(CHROME_STORE_ORIGIN.trim_end_matches('/'), crate::bridge::STORE_EXTENSION_ORIGIN);
         assert!(chrome.get("allowed_extensions").is_none());
         let firefox: Value = serde_json::from_slice(&manifest(Path::new("/opt/rdm"), true)).unwrap();
         assert_eq!(firefox["allowed_extensions"][0], FIREFOX_ID);

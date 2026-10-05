@@ -8,3 +8,5 @@
 /*.wixpdb
 
 node_modules/
+
+/screen/
