@@ -34,9 +34,10 @@ pub(in crate::ui) fn card(ui: &mut Ui, p: &Palette, (connected, installed): (Vec
         (true, false) => trf!("Installée · {}", "Installed · {}", names(&installed)),
         (true, true) => tr!("À installer", "Not installed").to_owned(),
     };
-    let galley = painter.layout_no_wrap(value, theme::semibold(13.0), p.text);
-    let clip = eframe::egui::Rect::from_min_max(eframe::egui::pos2(x, rect.top()), eframe::egui::pos2(rect.right() - 8.0, rect.bottom()));
-    painter.with_clip_rect(clip).galley(eframe::egui::pos2(x, rect.top() + 39.0 - galley.size().y / 2.0), galley, p.text);
+    let mut job = eframe::egui::text::LayoutJob::simple_singleline(value, theme::semibold(13.0), p.text);
+    job.wrap = eframe::egui::text::TextWrapping::truncate_at_width(rect.right() - 8.0 - x);
+    let galley = painter.layout_job(job);
+    painter.galley(eframe::egui::pos2(x, rect.top() + 39.0 - galley.size().y / 2.0), galley, p.text);
     response.on_hover_text(tr!("Installer ou vérifier l'extension", "Install or check the extension")).clicked()
 }
 
