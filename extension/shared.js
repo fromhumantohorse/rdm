@@ -61,7 +61,8 @@ export const siteOf = (url) => {
     const labels = host.split(".");
     const [second = "", tld = ""] = labels.slice(-2);
     const shared = SHARED_HOSTS.find((s) => host.endsWith(`.${s}`));
-    const suffix = shared ? shared.split(".").length : tld.length === 2 && REGISTRY_SECOND_LEVELS.has(second) ? 2 : 1;
+    const registry = tld.length === 2 && REGISTRY_SECOND_LEVELS.has(second) ? 2 : 1;
+    const suffix = shared ? shared.split(".").length : registry;
     return labels.slice(-(suffix + 1)).join(".");
   } catch {
     return "";
@@ -108,7 +109,7 @@ export const downloadName = (url, disposition = "", type = "") => {
 const NOT_A_NAME = new Set(["mozilla", "google", "microsoft", "browser", "stable", "web", "the"]);
 
 /**
- * The key of a browser's name, as RDM computes it too (`extension::key_of`, same tests): its
+ * The key of a browser's name, as RDM computes it too (`key_of` in `extension/browser.rs`, same tests): its
  * first telling word, letters only, lower case, at most 16. "Google Chrome" gives "chrome".
  */
 export const browserKey = (name = "") =>

@@ -80,7 +80,7 @@ test("a top-level response is a download when attached or not showable", () => {
   assert.equal(downloadName("https://x.io/a%20b.zip", "", "application/zip"), "a b.zip");
 });
 
-test("browser keys, as RDM computes them (extension::key_of)", () => {
+test("browser keys, as RDM computes them (key_of in extension/browser.rs)", () => {
   const cases = [
     ["Google Chrome", "chrome"],
     ["Microsoft Edge", "edge"],

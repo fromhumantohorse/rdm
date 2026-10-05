@@ -64,7 +64,7 @@
     const i = Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
     return `${(n / 1024 ** i).toFixed(i ? 1 : 0)} ${units[i]}`;
   };
-  const safeName = (s) => s.replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").replace(/\s+/g, " ").trim().slice(0, 150) || "video";
+  const safeName = (s) => s.replace(/[<>:"/\\|?*\p{Cc}]/gu, "_").replace(/\s+/g, " ").trim().slice(0, 150) || "video";
   const pageTitle = () => safeName(top === self ? document.title : "");
   const nameOf = (url) => {
     const { pathname, hostname } = new URL(url);
@@ -113,13 +113,13 @@
   // ── HLS: quality picker (resolved by RDM) ────────────────────────────
   /** Items for an HLS stream already probed by RDM; only what RDM can deliver with sound. */
   function hlsItems(url, info, base, via) {
-    const ext = info?.fmp4 ? "mp4" : "ts";
+    const container = info?.fmp4 ? "mp4" : "ts";
     const usable = (info?.variants ?? []).filter((v) => !v.audio || info.fmp4);
-    if (!usable.length) return [action(`${base}.${ext}`, t("bestQuality"), url, `${base}.${ext}`, undefined, via)];
+    if (!usable.length) return [action(`${base}.${container}`, t("bestQuality"), url, `${base}.${container}`, undefined, via)];
     return usable.map((v) => {
       const kbps = `${Math.round(v.bandwidth / 1000)} kb/s`;
       const quality = v.height ? `${v.height}p` : kbps;
-      const filename = `${base} (${quality}).${ext}`;
+      const filename = `${base} (${quality}).${container}`;
       return action(filename, `${quality} · ${kbps}${v.audio ? ` · ${t("separateAudio")}` : ""}`, v.url, filename, v.audio ?? undefined, via);
     });
   }
@@ -130,7 +130,10 @@
     show(note(t("readingQualities")));
     const info = await send({ kind: "probe", url, ...via });
     if (gen !== generation) return;
-    if (!info) return show(note(t("unreadableStream")));
+    if (!info) {
+      show(note(t("unreadableStream")));
+      return;
+    }
     show(section(t("chooseQuality")), ...hlsItems(url, info, base, via));
   }
 
@@ -138,16 +141,20 @@
   function youtubeFormats() {
     return new Promise((resolve) => {
       const nonce = crypto.randomUUID();
-      const done = (result) => {
-        removeEventListener("message", onMessage);
+      const listening = new AbortController();
+      const timer = setTimeout(() => done({ error: t("timedOut") }), YT_TIMEOUT);
+      function done(result) {
+        listening.abort();
         clearTimeout(timer);
         resolve(result);
-      };
-      const onMessage = (e) => {
-        if (e.source === window && e.data?.source === "rdm-yt" && e.data.nonce === nonce) done(e.data.result ?? {});
-      };
-      const timer = setTimeout(() => done({ error: t("timedOut") }), YT_TIMEOUT);
-      addEventListener("message", onMessage);
+      }
+      addEventListener(
+        "message",
+        (e) => {
+          if (e.source === window && e.data?.source === "rdm-yt" && e.data.nonce === nonce) done(e.data.result ?? {});
+        },
+        { signal: listening.signal },
+      );
       window.postMessage({ source: "rdm", type: "yt-resolve", nonce }, location.origin);
     });
   }
@@ -167,9 +174,9 @@
     const items = [];
     const bestAudio = formats.filter((f) => f.audio && !f.video && f.container === "mp4").sort((a, b) => b.bitrate - a.bitrate)[0];
     const videos = new Map(); // height → best video-only MP4
-    for (const f of formats.filter((f) => f.video && !f.audio && f.container === "mp4")) {
-      const cur = videos.get(f.height);
-      if (!cur || f.bitrate > cur.bitrate) videos.set(f.height, f);
+    for (const video of formats.filter((f) => f.video && !f.audio && f.container === "mp4")) {
+      const cur = videos.get(video.height);
+      if (!cur || video.bitrate > cur.bitrate) videos.set(video.height, video);
     }
     if (bestAudio && videos.size) {
       items.push(section(t("videoAudioMerged")));
@@ -195,9 +202,9 @@
     if (audios.length) {
       items.push(section(t("audioOnly")));
       for (const a of audios.slice(0, 2)) {
-        const ext = a.container === "mp4" ? "m4a" : "weba";
-        const filename = `${base}.${ext}`;
-        const detail = [`${Math.round(a.bitrate / 1000)} kb/s`, human(a.size), ext.toUpperCase()].filter(Boolean).join(" · ");
+        const suffix = a.container === "mp4" ? "m4a" : "weba";
+        const filename = `${base}.${suffix}`;
+        const detail = [`${Math.round(a.bitrate / 1000)} kb/s`, human(a.size), suffix.toUpperCase()].filter(Boolean).join(" · ");
         items.push(action(filename, detail, a.url, filename, undefined, via));
       }
     }
@@ -212,8 +219,12 @@
     show(note(t("findingQualities")));
     const yt = await youtubeFormats();
     if (gen !== generation) return;
+    if (yt.error === "no-video") {
+      show(note(t("openWatchPage")));
+      return;
+    }
     const base = safeName(yt.title || pageTitle());
-    const notes = [...(yt.errors ?? [])];
+    const notes = [...(yt.errors ?? []), ...(yt.error ? [String(yt.error)] : [])];
     const items = [];
 
     // Direct links: the first client whose links really download from RDM wins.
@@ -309,19 +320,24 @@
   async function installModule() {
     show(note(t("ytModuleStarting")));
     const mod = await send({ kind: "yt-module", action: "install" });
-    if (mod === "unpaired") return show(note(UNPAIRED_NOTE));
-    if (!mod?.state) return show(note(t("notRunningShort")));
-    show(note(mod.state === "ready" ? t("ytModuleReady") : t("ytModuleInstalling")));
+    if (mod === "unpaired") show(note(UNPAIRED_NOTE));
+    else if (!mod?.state) show(note(t("notRunningShort")));
+    else show(note(mod.state === "ready" ? t("ytModuleReady") : t("ytModuleInstalling")));
   }
 
   // ── YouTube recording: page reload in recording mode, relay to RDM, progress banner ──
   async function startRecording(filename) {
     const videoId = new URL(location.href).searchParams.get("v");
-    if (!videoId) return show(note(t("openWatchPage")));
+    if (!videoId) {
+      show(note(t("openWatchPage")));
+      return;
+    }
     show(note(t("preparingRecording")));
     const token = await send({ kind: "record-start", filename });
-    if (token === "unpaired") return show(note(UNPAIRED_NOTE));
-    if (typeof token !== "string") return show(note(t("notRunningShort")));
+    if (typeof token !== "string" || token === "unpaired") {
+      show(note(token === "unpaired" ? UNPAIRED_NOTE : t("notRunningShort")));
+      return;
+    }
     sessionStorage.setItem("rdm-record", JSON.stringify({ token, videoId, at: Date.now() }));
     location.reload(); // the player must start afresh with the recorder in place (capture.js)
   }
@@ -354,14 +370,18 @@
     cancel.textContent = t("cancel");
     document.documentElement.append(banner);
 
-    const frame = document.createElement("iframe");
-    frame.src = `${ext.runtime.getURL("relay.html")}#${token}`;
-    frame.style.display = "none";
-    const relayOrigin = new URL(frame.src).origin;
+    const relay = document.createElement("iframe");
+    relay.src = `${ext.runtime.getURL("relay.html")}#${token}`;
+    relay.style.display = "none";
+    const relayOrigin = new URL(relay.src).origin;
     const control = (type) => window.postMessage({ source: "rdm-rec-control", token, type }, location.origin);
-    const toRelay = (msg, transfer = []) => frame.contentWindow?.postMessage(msg, relayOrigin, transfer);
+    const toRelay = (msg, transfer = []) => relay.contentWindow?.postMessage(msg, relayOrigin, transfer);
     const started = Date.now();
     let over = false;
+    const timeLeft = (secs) => {
+      if (secs === null) return "";
+      return secs >= 60 ? t("minutesLeft", Math.ceil(secs / 60)) : t("secondsLeft", secs);
+    };
 
     const finish = (message, ok) => {
       over = true;
@@ -382,13 +402,12 @@
         } else if (msg.type === "progress" && !over) {
           const f = Math.min(Math.max(msg.fraction, 0), 1);
           const left = f > 0.02 ? Math.round(((Date.now() - started) / 1000) * (1 - f) / f) : null;
-          const eta = left == null ? "" : left >= 60 ? t("minutesLeft", Math.ceil(left / 60)) : t("secondsLeft", left);
-          text.textContent = msg.paused && f < 0.01 ? t("clickToStart") : t("recordingProgress", Math.floor(f * 100), eta);
+          text.textContent = msg.paused && f < 0.01 ? t("clickToStart") : t("recordingProgress", Math.floor(f * 100), timeLeft(left));
         }
         if (msg.type === "end") text.textContent = t("merging");
         // capture.js (page world, no translations) sends reason codes.
         if (msg.type === "abort") finish(t("recordingAborted", msg.reason === "video-changed" ? t("videoChanged") : String(msg.reason)), false);
-      } else if (e.source === frame.contentWindow && msg.source === "rdm-relay") {
+      } else if (e.source === relay.contentWindow && msg.source === "rdm-relay") {
         if (msg.type === "loaded") control("ready");
         if (msg.type === "finished") finish(t("recordingDone"), true);
         if (msg.type === "error") {
@@ -402,7 +421,7 @@
       toRelay({ source: "rdm-rec", token, type: "abort" });
       finish(t("recordingCancelled"), false);
     });
-    document.documentElement.append(frame);
+    document.documentElement.append(relay);
   }
 
   const recordingToken = document.documentElement.getAttribute("data-rdm-recording");
@@ -423,7 +442,10 @@
     const items = [...(target ? elementSources(target) : []), ...network.sort((a, b) => b.size - a.size)].filter(
       ({ url }) => isHttp(url) && !seen.has(url) && seen.add(url),
     );
-    if (!items.length) return show(note(t("noStream")));
+    if (!items.length) {
+      show(note(t("noStream")));
+      return;
+    }
     const base = pageTitle();
     show(
       section(t("detectedVideos")),
@@ -439,7 +461,10 @@
 
   // ── Positioning ───────────────────────────────────────────────────────
   function place() {
-    if (!target?.isConnected) return hide();
+    if (!target?.isConnected) {
+      hide();
+      return;
+    }
     const r = target.getBoundingClientRect();
     host.style.top = `${Math.max(4, r.top + 8)}px`;
     host.style.left = `${Math.max(4, r.right - btn.offsetWidth - 8)}px`;

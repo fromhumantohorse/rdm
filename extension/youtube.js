@@ -156,7 +156,10 @@
     if (e.source !== window || e.data?.source !== "rdm" || e.data.type !== "yt-resolve") return;
     const { nonce } = e.data;
     const videoId = currentVideoId();
-    if (!videoId) return reply(nonce, { error: "no-video" });
+    if (!videoId) {
+      reply(nonce, { error: "no-video" });
+      return;
+    }
     let hit = cache.get(videoId);
     if (!hit || Date.now() - hit.at > CACHE_MS) {
       hit = { at: Date.now(), promise: resolve(videoId) };

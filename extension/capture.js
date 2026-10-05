@@ -72,7 +72,7 @@
   MediaSource.prototype.addSourceBuffer = function (mime) {
     const sb = addSourceBuffer.call(this, mime);
     if (!sourceIds.has(this)) sourceIds.set(this, ++sources);
-    const track = /^audio\//i.test(mime) ? "audio" : /^video\//i.test(mime) ? "video" : null;
+    const track = /^(audio|video)\//i.exec(String(mime))?.[1].toLowerCase() ?? null;
     if (track) buffers.set(sb, { ms: sourceIds.get(this), track, pending: new Uint8Array(0) });
     return sb;
   };
@@ -130,9 +130,13 @@
     if (!p?.getAvailableQualityLevels || !video) return;
     if (videoId() !== job.videoId) {
       post({ type: "abort", reason: "video-changed" }); // translated by content.js
-      return stop();
+      stop();
+      return;
     }
-    if (isAd()) return post({ type: "progress", ad: true }); // not recorded; the banner says so
+    if (isAd()) {
+      post({ type: "progress", ad: true }); // not recorded; the banner says so
+      return;
+    }
     if (!configured) {
       const best = p.getAvailableQualityLevels().find((q) => q !== "auto");
       if (!best) return; // levels not known yet

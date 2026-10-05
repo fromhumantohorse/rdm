@@ -53,6 +53,22 @@ const isWeb = (url) => /^https?:\/\//i.test(url ?? "");
 
 /** RDM is running but did not answer in time (busy disk, starting up): not the same as absent. */
 const TIMEOUT = Symbol("timeout");
+/** Requests on which the connector starts RDM if it is not running (the user asked for them). */
+const STARTS_RDM = new Set(["/add", "/show", "/record/start"]);
+const NULL_BODY = new Set([204, 205, 304]);
+
+/**
+ * Firefox gives each install a random origin, which RDM only accepts once the user approved it in
+ * RDM's window (401 until then). The toolbar badge says so instead of silently failing.
+ */
+const UNPAIRED = 401;
+const UNPAIRED_TEXT = t("unpaired");
+function setPaired(ok) {
+  // No in-memory "already set" shortcut: the badge outlives a sleeping service worker's state.
+  ext.action.setBadgeText({ text: ok ? "" : "!" }).catch(() => {});
+  if (!ok) ext.action.setBadgeBackgroundColor({ color: "#d97706" }).catch(() => {});
+  ext.action.setTitle({ title: ok ? "RDM" : `RDM — ${UNPAIRED_TEXT}` }).catch(() => {});
+}
 
 /**
  * The connector: one connection, opened on demand, closed when idle. Requests carry an id; the
@@ -103,7 +119,10 @@ const native = {
   touch() {
     clearTimeout(this.idleTimer);
     this.idleTimer = setTimeout(() => {
-      if (this.pending.size) return this.touch();
+      if (this.pending.size) {
+        this.touch();
+        return;
+      }
       this.port?.disconnect();
       this.port = null;
     }, NATIVE_IDLE_MS);
@@ -137,10 +156,6 @@ const native = {
   },
 };
 
-/** Requests on which the connector starts RDM if it is not running (the user asked for them). */
-const STARTS_RDM = new Set(["/add", "/show", "/record/start"]);
-const NULL_BODY = new Set([204, 205, 304]);
-
 /** A response, `TIMEOUT`, or `null` when RDM is not running. */
 async function call(path, { method = "GET", body, timeout = 3000 } = {}) {
   const reply = await native.request({ method, path, body, browser: await BROWSER }, timeout);
@@ -172,19 +187,6 @@ async function call(path, { method = "GET", body, timeout = 3000 } = {}) {
 }
 
 const answered = (res) => res && res !== TIMEOUT;
-
-/**
- * Firefox gives each install a random origin, which RDM only accepts once the user approved it in
- * RDM's window (401 until then). The toolbar badge says so instead of silently failing.
- */
-const UNPAIRED = 401;
-const UNPAIRED_TEXT = t("unpaired");
-function setPaired(ok) {
-  // No in-memory "already set" shortcut: the badge outlives a sleeping service worker's state.
-  ext.action.setBadgeText({ text: ok ? "" : "!" }).catch(() => {});
-  if (!ok) ext.action.setBadgeBackgroundColor({ color: "#d97706" }).catch(() => {});
-  ext.action.setTitle({ title: ok ? "RDM" : `RDM — ${UNPAIRED_TEXT}` }).catch(() => {});
-}
 
 /**
  * Firefox: the connector vouches for this extension, so RDM accepts its random origin (the
@@ -224,7 +226,11 @@ const outcome = (res, accepted) => {
 };
 
 /** The page's message for a hand-off that did not happen. */
-const refusal = (sent) => (sent === "unpaired" ? `✗ ${UNPAIRED_TEXT}` : sent === "busy" ? t("busy") : t("notRunning"));
+const refusal = (sent) => {
+  if (sent === "unpaired") return `✗ ${UNPAIRED_TEXT}`;
+  if (sent === "busy") return t("busy");
+  return t("notRunning");
+};
 
 const CONFIG = "config";
 const cachedConfig = async () => (await ext.storage.session.get(CONFIG).catch(() => ({})))[CONFIG] ?? null;
@@ -378,6 +384,8 @@ const nameOf = (url) => {
 };
 
 // ── Download interception ────────────────────────────────────────────────
+const header = (headers, name) => headers?.find((h) => h.name.toLowerCase() === name)?.value;
+
 async function intercept(item) {
   const url = item.finalUrl || item.url;
   // Private windows stay private (RDM keeps a history); other extensions' downloads are theirs.
@@ -396,7 +404,10 @@ async function intercept(item) {
     toast(t("sentName", filename ?? nameOf(url)));
   } else {
     await ext.downloads.resume(item.id).catch(() => {});
-    if (sent === "unpaired" || sent === "busy") return toast(refusal(sent));
+    if (sent === "unpaired" || sent === "busy") {
+      toast(refusal(sent));
+      return;
+    }
     // RDM closed since its last answer: say it once, then leave downloads alone until it is back.
     await forgetConfig();
     toast(t("noAnswer"));
@@ -457,7 +468,6 @@ const remember = (tabId, key, item) =>
 
 const forget = (tabId) => serially(() => media.clear(tabId));
 
-const header = (headers, name) => headers?.find((h) => h.name.toLowerCase() === name)?.value;
 // YouTube streams are chunks of a proprietary protocol: resolved in-page instead (youtube.js).
 const isYouTubeStream = (url) => /^https:\/\/[^/?#]+\.googlevideo\.com[:/]/i.test(url);
 
@@ -485,8 +495,9 @@ ext.tabs.onRemoved.addListener(forget);
 ext.tabs.onUpdated.addListener((tabId, { url }) => url && forget(tabId));
 
 // ── Content-script API ───────────────────────────────────────────────────
+// `true`: the reply comes later (asynchronously); `false`: none comes.
 ext.runtime.onMessage.addListener((msg, sender, reply) => {
-  if (sender.id !== ext.runtime.id) return;
+  if (sender.id !== ext.runtime.id) return false;
   const tab = sender.tab;
   // The frame is what the browser would send as Referer (embedded players live in iframes).
   const base = { referrer: sender.url ?? tab?.url, topUrl: tab?.url, userAgent: msg?.user_agent, bare: msg?.bare === true };
@@ -515,6 +526,8 @@ ext.runtime.onMessage.addListener((msg, sender, reply) => {
     case "record-start":
       recordStart(tab?.url, msg.filename).then(reply, () => reply(null));
       return true;
+    default:
+      return false;
   }
 });
 
@@ -527,7 +540,10 @@ ext.action.onClicked.addListener(async (tab) => {
 
 ext.contextMenus.onClicked.addListener(async ({ linkUrl, srcUrl, pageUrl, frameUrl }, tab) => {
   const url = linkUrl || srcUrl;
-  if (!isWeb(url)) return toast(t("notWeb"), tab?.id);
+  if (!isWeb(url)) {
+    toast(t("notWeb"), tab?.id);
+    return;
+  }
   const sent = await sendToApp({ url, referrer: frameUrl || pageUrl, topUrl: pageUrl, storeId: await storeOf(tab) });
   toast(sent === true ? t("sentName", nameOf(url)) : refusal(sent), tab?.id);
 });
