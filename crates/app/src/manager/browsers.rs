@@ -33,6 +33,13 @@ pub(super) const CUSTOM_BROWSERS_FILE: &str = "custom_browsers.json";
 /// How long after RDM opened a browser to install the extension its tab is still taken as RDM's.
 const INSTALL_TAB_TTL: Duration = Duration::from_secs(15 * 60);
 
+/// How often the running browsers are looked at (see `Manager::watch_browsers`).
+const WATCH_EVERY: Duration = Duration::from_secs(5);
+/// A browser that just started checks in within seconds: past this, it has no extension.
+const STARTED_GRACE: Duration = Duration::from_secs(30);
+/// A browser already running when RDM starts checks in at its next heartbeat (every 5 minutes).
+const RUNNING_GRACE: Duration = Duration::from_secs(6 * 60);
+
 /// Installing the extension into one browser, as the extension window shows it.
 #[derive(Debug, Clone)]
 pub enum Install {
@@ -316,5 +323,60 @@ impl Manager {
         }
         done.launched = open(browser.extensions_page());
         Ok(done)
+    }
+
+    /// Like IDM: a browser starting without the extension gets an offer to install it, once per
+    /// browser and session, while the "Offer the extension when a browser starts" setting is on.
+    /// The thread holds the manager only for each look, and ends with it.
+    pub fn watch_browsers(self: &Arc<Self>) {
+        let this = Arc::downgrade(self);
+        std::thread::spawn(move || {
+            // Running browsers not offered yet → when they count as lacking the extension.
+            let mut due: HashMap<&'static str, Instant> = HashMap::new();
+            let mut offered: HashSet<&'static str> = HashSet::new();
+            let mut grace = RUNNING_GRACE;
+            loop {
+                let Some(manager) = this.upgrade().filter(|m| !m.is_closing()) else { return };
+                if manager.with_settings(|s| s.offer_extension) {
+                    let running = extension::running();
+                    due.retain(|key, _| running.contains(key));
+                    for key in running {
+                        if offered.contains(key) || Instant::now() < *due.entry(key).or_insert_with(|| Instant::now() + grace) {
+                            continue;
+                        }
+                        offered.insert(key);
+                        let browser = manager.browsers().into_iter().find(|b| b.key() == key);
+                        if let Some(browser) = browser.filter(|&b| manager.browser_last_seen(b).is_none() && !manager.uninstall_requested(key)) {
+                            manager.offer_extension(browser);
+                        }
+                    }
+                }
+                drop(manager);
+                grace = STARTED_GRACE;
+                std::thread::sleep(WATCH_EVERY);
+            }
+        });
+    }
+
+    /// Asks the user whether to install the extension into `browser`, which just started without it.
+    fn offer_extension(self: &Arc<Self>, browser: Browser) {
+        let this = Arc::downgrade(self);
+        let asked = notify::offer_extension(browser.name(), move || {
+            if let Some(manager) = this.upgrade() {
+                *lock(&manager.extension_offer) = Some(browser);
+                manager.install_extension(browser);
+                manager.show();
+            }
+        });
+        // No answer possible from the notification (Windows): the window asks instead.
+        if !asked {
+            *lock(&self.extension_offer) = Some(browser);
+            self.show();
+        }
+    }
+
+    /// The browser whose extension offer the window must show, once.
+    pub fn take_extension_offer(&self) -> Option<Browser> {
+        lock(&self.extension_offer).take()
     }
 }

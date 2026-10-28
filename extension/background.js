@@ -1,4 +1,4 @@
-import { browserKey, downloadName, isCapturable, isHls, isMediaType, isMediaUrl, siteOf } from "./shared.js";
+import { browserKey, downloadName, isCapturable, isHls, isMediaType, isMediaUrl, isModelType, isModelUrl, siteOf } from "./shared.js";
 
 // Chrome, Brave, Opera, Edge (`chrome`) and Firefox (`browser`): same promise-based API.
 const ext = globalThis.browser ?? globalThis.chrome;
@@ -11,6 +11,7 @@ const NATIVE_HOST = "rdm.bridge";
 /** An idle connection to the connector is closed: the browser (and the connector) can rest. */
 const NATIVE_IDLE_MS = 60_000;
 const MIN_MEDIA_BYTES = 256 * 1024; // ignore stream fragments and previews
+const MIN_MODEL_BYTES = 512; // 3D models can be small (a compressed scene description)
 const MAX_ITEMS_PER_TAB = 60; // bounds session storage on pages that stream many unique URLs
 /** Checks in with RDM this often while the browser runs (RDM shows the extension as connected). */
 const HEARTBEAT_MINUTES = 5;
@@ -253,6 +254,8 @@ async function appConfig() {
     }
     if (typeof config?.captured === "string") {
       await ext.storage.session.set({ [CONFIG]: config }).catch(() => {});
+      // Content scripts cannot read session storage: the button's look goes to local storage.
+      await ext.storage.local.set({ mini: config.mini === true }).catch(() => {});
       return config;
     }
   }
@@ -463,7 +466,7 @@ const remember = (tabId, key, item) =>
     const keys = Object.keys(items);
     keys.slice(0, Math.max(0, keys.length - MAX_ITEMS_PER_TAB)).forEach((k) => delete items[k]);
     await media.set(tabId, items);
-    ext.tabs.sendMessage(tabId, { kind: "media-changed" }).catch(() => {});
+    ext.tabs.sendMessage(tabId, { kind: "media-changed", model: item.model }).catch(() => {});
   });
 
 const forget = (tabId) => serially(() => media.clear(tabId));
@@ -477,17 +480,18 @@ ext.webRequest.onHeadersReceived.addListener(
     // Cheapest tests first: this runs for every XHR of every tab.
     const type = header(responseHeaders, "content-type") ?? "";
     const hls = isHls(url, type);
-    if (!hls && !isMediaType(type) && !isMediaUrl(url)) return;
+    const model = !hls && (isModelUrl(url) || isModelType(type));
+    if (!hls && !model && !isMediaType(type) && !isMediaUrl(url)) return;
     if (isYouTubeStream(url)) return;
     const range = header(responseHeaders, "content-range");
     const announced = Number(range?.split("/")[1] ?? header(responseHeaders, "content-length") ?? 0);
     const size = hls || !Number.isFinite(announced) ? 0 : announced;
-    if (size && size < MIN_MEDIA_BYTES) return;
+    if (size && size < (model ? MIN_MODEL_BYTES : MIN_MEDIA_BYTES)) return;
 
     const key = url.replace(/([?&])(range|rn|rbuf|bytestart|byteend)=[^&]*/g, "$1");
-    remember(tabId, key, { url, size, type: hls ? "HLS" : type.split(";")[0], hls });
+    remember(tabId, key, { url, size, type: hls ? "HLS" : type.split(";")[0], hls, model });
   },
-  { urls: ["<all_urls>"], types: ["media", "xmlhttprequest", "other"] },
+  { urls: ["<all_urls>"], types: ["media", "xmlhttprequest", "object", "other"] },
   ["responseHeaders"],
 );
 

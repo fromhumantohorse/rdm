@@ -94,6 +94,7 @@ fn main() -> eframe::Result {
         manager.add(AddRequest::from_url(url));
     }
     rt.spawn(bridge::serve(manager.clone(), listener));
+    manager.watch_browsers();
     #[cfg(unix)]
     rt.spawn(quit_on_signal(manager.clone()));
     let result = ui::run(manager.clone(), minimized); // returns once the manager has shut down

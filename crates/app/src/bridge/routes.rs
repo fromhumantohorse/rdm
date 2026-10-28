@@ -34,6 +34,8 @@ pub(super) async fn ping_read(State(manager): State<Arc<Manager>>, headers: Head
 pub(super) struct Config {
     /// Extensions the browser should hand over (space-separated), from the user's settings.
     captured: String,
+    /// The button over videos is a small icon without text (settings).
+    mini: bool,
     /// The user removed the extension from RDM's window: it uninstalls itself.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     uninstall: bool,
@@ -42,7 +44,8 @@ pub(super) struct Config {
 pub(super) async fn config(State(manager): State<Arc<Manager>>, headers: HeaderMap) -> Result<Json<Config>, StatusCode> {
     guard_access(&manager, &headers, Access::Read)?;
     let uninstall = browser_of(&headers).is_some_and(|b| manager.uninstall_requested(b));
-    Ok(Json(Config { captured: manager.settings().captured, uninstall }))
+    let (captured, mini) = manager.with_settings(|s| (s.captured.clone(), s.mini_button));
+    Ok(Json(Config { captured, mini, uninstall }))
 }
 
 /// The extension got the removal request and uninstalls itself now.

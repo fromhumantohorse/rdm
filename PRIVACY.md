@@ -8,4 +8,4 @@ RDM (the desktop application and its browser extension) collects no personal dat
 - Settings (the list of captured file types) are stored locally in the browser.
 - Optional VirusTotal scans, done by the desktop application only when you enable them with your own API key, send the file's SHA-256 (and the file only if you choose to upload it) to VirusTotal.
 
-Contact: open an issue at https://github.com/vincentxjoubert-lang/rdm/issues
+Contact: open an issue at https://github.com/fromhumantohorse/rdm/issues

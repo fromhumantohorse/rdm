@@ -40,6 +40,23 @@ export const isMediaUrl = (url) => MEDIA_EXTENSIONS.has(extOf(pathOf(url)));
 // MPEG-TS fragments and DASH manifests are pieces of a stream, not standalone media.
 export const isMediaType = (type = "") => /^(video|audio)\//i.test(type) && !/mp2t|mpegurl|dash/i.test(type);
 
+// 3D models: interchange formats, DCC scenes, CAD, point clouds and Gaussian splats.
+const MODEL_EXTENSIONS = new Set(
+  ("3dm 3ds 3mf abc blend c4d dae drc fbx glb gltf iges igs ifc ksplat lwo ma max mb obj off ply skp " +
+    "splat spz stl step stp usd usda usdc usdz vrm vrml wrl x3d x3db x3dv").split(" "),
+);
+
+// Viewers' own formats: Sketchfab (`file.osgjs.gz`, `model_file.binz`, not the wireframe overlay).
+const VIEWER_MODEL = /(\.osgjs(\.gz)?|\/model_file(?!_wireframe)[^/]*\.(binz|bin(\.gz)?))$/i;
+
+export const isModelUrl = (url) => {
+  const path = pathOf(url);
+  return MODEL_EXTENSIONS.has(extOf(path)) || VIEWER_MODEL.test(path);
+};
+
+export const isModelType = (type = "") =>
+  /^model\//i.test(type) || /^application\/(sla|vnd\.ms-pki\.stl|x-tgif|x-3ds|x-blender|vnd\.collada\+xml)\b/i.test(type);
+
 // Same lists as RDM's `engine/src/net.rs`: second levels a country's registry hands out
 // (`co.uk`, `ne.jp`), and hosting platforms whose subdomains belong to different people.
 const REGISTRY_SECOND_LEVELS = new Set(

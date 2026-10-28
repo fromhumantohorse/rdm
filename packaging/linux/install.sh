@@ -7,9 +7,18 @@
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
+# As root (sudo), everything would land in /root/.local, invisible from the user's session.
+if [ "$(id -u)" -eq 0 ]; then
+    echo "error: run this script as your normal user, without sudo (it asks for root itself when needed)" >&2
+    exit 1
+fi
 bin="$HOME/.local/bin"
 data="${XDG_DATA_HOME:-$HOME/.local/share}"
 config="${XDG_CONFIG_HOME:-$HOME/.config}"
+# A Flatpak app's terminal points these into the app's sandbox (~/.var/app/…): the desktop
+# would never see the menu entry nor the icons there.
+case "$data" in "$HOME"/.var/app/*) data="$HOME/.local/share" ;; esac
+case "$config" in "$HOME"/.var/app/*) config="$HOME/.config" ;; esac
 apps="$data/applications"
 hicolor="$data/icons/hicolor"
 
@@ -72,7 +81,7 @@ desktop_exec() {
 # ── Privileges (package installs only) ───────────────────────────────────
 as_root() {
     if [ "$(id -u)" -eq 0 ]; then "$@"
-    elif command -v sudo >/dev/null; then sudo "$@"
+    elif command -v sudo >/dev/null && { [ -t 0 ] || sudo -n true 2>/dev/null || ! command -v pkexec >/dev/null; }; then sudo "$@"
     elif command -v pkexec >/dev/null; then pkexec "$@"
     else warn "neither sudo nor pkexec: run as root: $*"; return 1
     fi
@@ -195,7 +204,9 @@ fi
 
 # ── Binary: shipped next to this script, or built from the source tree ──────
 exe=""
-for candidate in "$here/rdm" "$here/../../target/release/rdm"; do
+target="${CARGO_TARGET_DIR:-$here/../../target}"
+case "$target" in /*) ;; *) target="$here/../../$target" ;; esac
+for candidate in "$here/rdm" "$target/release/rdm"; do
     [ -x "$candidate" ] && exe=$candidate && break
 done
 if [ -z "$exe" ] && [ -f "$here/../../Cargo.toml" ]; then
@@ -205,7 +216,7 @@ if [ -z "$exe" ] && [ -f "$here/../../Cargo.toml" ]; then
         [ "$deps" -eq 0 ] || [ -z "$pm" ] || install_packages $(build_packages)
         say "Building RDM (cargo build --release)…"
         (cd "$here/../.." && "$cargo" build --release -p rdm)
-        exe="$here/../../target/release/rdm"
+        exe="$target/release/rdm"
     fi
 fi
 [ -n "$exe" ] && [ -x "$exe" ] || {
@@ -241,15 +252,8 @@ else
 fi
 command -v update-desktop-database >/dev/null && update-desktop-database "$apps" 2>/dev/null || true
 command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -t -f "$hicolor" 2>/dev/null || true
-
-# ── Desktop shortcut, where the desktop shows icons (a Desktop folder exists) ─
-desktop_dir=$(desktop_folder)
-if [ -n "$desktop_dir" ] && [ -d "$desktop_dir" ]; then
-    install -m 755 "$apps/rdm.desktop" "$desktop_dir/rdm.desktop"
-    # GNOME (Desktop Icons NG) launches only entries marked trusted.
-    command -v gio >/dev/null && gio set "$desktop_dir/rdm.desktop" metadata::trusted true 2>/dev/null || true
-    say "Desktop shortcut: $desktop_dir/rdm.desktop"
-fi
+# KDE Plasma reads its own menu cache: refresh it, or the entry only shows after the next login.
+for b in kbuildsycoca6 kbuildsycoca5; do command -v $b >/dev/null && { $b >/dev/null 2>&1 || true; break; }; done
 
 # ── Start at login (same entry and flag as the app's own setting) ───────────
 if [ "$autostart" -eq 1 ]; then

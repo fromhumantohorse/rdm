@@ -95,6 +95,10 @@ pub struct Settings {
     /// A download sent by the browser extension waits in RDM's window (brought to the front)
     /// for the user's go-ahead; off: it starts right away.
     pub confirm_browser: bool,
+    /// The extension's button over videos is a small icon, without its text.
+    pub mini_button: bool,
+    /// A browser starting without the extension gets RDM's offer to install it (like IDM).
+    pub offer_extension: bool,
     pub connections: u8,
     /// Downloads of the main queue running at once; the rest wait.
     pub max_parallel: u8,
@@ -147,6 +151,8 @@ impl Default for Settings {
             captured: domain::default_captured(),
             captured_revision: domain::CAPTURED_REVISION,
             confirm_browser: true,
+            mini_button: false,
+            offer_extension: true,
             connections: domain::DEFAULT_CONNECTIONS,
             max_parallel: 3,
             queues: Vec::new(),

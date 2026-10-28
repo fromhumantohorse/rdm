@@ -126,6 +126,9 @@ pub struct Manager {
     /// Browsers RDM just opened on the extension's package or page, and when: the tab it opened is
     /// closed once the extension is installed (see `Manager::installed_by_rdm`).
     opened_to_install: Mutex<HashMap<String, Instant>>,
+    /// A browser started without the extension and the user asked to install it (or, on Windows,
+    /// where toasts cannot answer, RDM offers it in its window): the extension window opens on it.
+    extension_offer: Mutex<Option<Browser>>,
 }
 
 /// A message for the window (a toast): the outcome of something done in the background.
@@ -181,6 +184,7 @@ impl Manager {
             installs: Mutex::default(),
             custom_browsers: Mutex::new(load_json(CUSTOM_BROWSERS_FILE)),
             opened_to_install: Mutex::default(),
+            extension_offer: Mutex::default(),
         });
         this.save_settings();
         this.spawn_ticker();

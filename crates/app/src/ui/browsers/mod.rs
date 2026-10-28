@@ -45,6 +45,14 @@ impl App<'_> {
         self.browsers = Some(Browsers { found, open: None });
     }
 
+    /// The extension window, with `browser`'s instructions unfolded.
+    pub(super) fn open_browsers_on(&mut self, browser: Browser) {
+        self.open_browsers();
+        if let Some(state) = &mut self.browsers {
+            state.open = Some(browser);
+        }
+    }
+
     pub(super) fn browsers_dialog(&mut self, ctx: &Context) {
         let Some(mut state) = self.browsers.take() else { return };
         let p = Palette::from_ctx(ctx);

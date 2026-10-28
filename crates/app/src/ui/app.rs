@@ -246,6 +246,10 @@ impl eframe::App for App<'_> {
             });
         self.settings_dialog(ctx);
         self.report_dialog(ctx, &mut actions);
+        // A browser started without the extension and the user said yes (or Windows asks here).
+        if let Some(browser) = self.manager.take_extension_offer() {
+            self.open_browsers_on(browser);
+        }
         self.browsers_dialog(ctx);
         self.edit_dialog(ctx);
         self.delete_dialog(ctx);

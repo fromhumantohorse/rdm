@@ -10,9 +10,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/vincentxjoubert-lang/rdm/releases/latest"><img src="https://img.shields.io/github/v/release/vincentxjoubert-lang/rdm?label=version&color=6a5cff" alt="Version"></a>
-  <a href="https://github.com/vincentxjoubert-lang/rdm/releases"><img src="https://img.shields.io/github/downloads/vincentxjoubert-lang/rdm/total?color=3d8bff" alt="Downloads"></a>
-  <a href="https://github.com/vincentxjoubert-lang/rdm/actions"><img src="https://img.shields.io/github/actions/workflow/status/vincentxjoubert-lang/rdm/release.yml?label=build" alt="Build"></a>
+  <a href="https://github.com/fromhumantohorse/rdm/releases/latest"><img src="https://img.shields.io/github/v/release/vincentxjoubert-lang/rdm?label=version&color=6a5cff" alt="Version"></a>
+  <a href="https://github.com/fromhumantohorse/rdm/releases"><img src="https://img.shields.io/github/downloads/vincentxjoubert-lang/rdm/total?color=3d8bff" alt="Downloads"></a>
+  <a href="https://github.com/fromhumantohorse/rdm/actions"><img src="https://img.shields.io/github/actions/workflow/status/vincentxjoubert-lang/rdm/release.yml?label=build" alt="Build"></a>
   <img src="https://img.shields.io/badge/Rust-2024-b24cff" alt="Rust">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-34d399" alt="MIT"></a>
 </p>
@@ -27,13 +27,13 @@ RDM speaks **16 languages** (English, French, Spanish, German, Italian, Portugue
 
 | System | File | Installation |
 |---|---|---|
-| **Windows 10 / 11** | [`RDM-x.y.z-x64-setup.msi`](https://github.com/vincentxjoubert-lang/rdm/releases/latest) | Double-click. Installed for your account (no administrator rights), Start menu and **Desktop**. A running RDM is closed cleanly and started again. Later updates install silently from RDM. |
+| **Windows 10 / 11** | [`RDM-x.y.z-x64-setup.msi`](https://github.com/fromhumantohorse/rdm/releases/latest) | Double-click. Installed for your account (no administrator rights), Start menu and **Desktop**. A running RDM is closed cleanly and started again. Later updates install silently from RDM. |
 | **Ubuntu 26.04** | source code | `sh install-ubuntu.sh` (see [Installation](#installation)): icon in the GNOME applications, starts at login. |
-| **Debian / Ubuntu** | [`rdm_*.deb`](https://github.com/vincentxjoubert-lang/rdm/releases/latest) | `sudo apt install ./rdm_*.deb` |
-| **Fedora / openSUSE** | [`rdm-*.rpm`](https://github.com/vincentxjoubert-lang/rdm/releases/latest) | `sudo dnf install ./rdm-*.rpm` |
-| **Linux (others)** | [`rdm-linux-x64.tar.gz`](https://github.com/vincentxjoubert-lang/rdm/releases/latest) | Extract, then `sh install.sh` |
-| **Chrome / Brave / Opera / Edge** | from RDM, or [`rdm-chromium.zip`](https://github.com/vincentxjoubert-lang/rdm/releases/latest) | See [Browser extension](#browser-extension) |
-| **Firefox / Waterfox** | from RDM, or [`rdm-firefox.xpi`](https://github.com/vincentxjoubert-lang/rdm/releases/latest) | See [Browser extension](#browser-extension) |
+| **Debian / Ubuntu** | [`rdm_*.deb`](https://github.com/fromhumantohorse/rdm/releases/latest) | `sudo apt install ./rdm_*.deb` |
+| **Fedora / openSUSE** | [`rdm-*.rpm`](https://github.com/fromhumantohorse/rdm/releases/latest) | `sudo dnf install ./rdm-*.rpm` |
+| **Linux (others)** | [`rdm-linux-x64.tar.gz`](https://github.com/fromhumantohorse/rdm/releases/latest) | Extract, then `sh install.sh` |
+| **Chrome / Brave / Opera / Edge** | from RDM, or [`rdm-chromium.zip`](https://github.com/fromhumantohorse/rdm/releases/latest) | See [Browser extension](#browser-extension) |
+| **Firefox / Waterfox** | from RDM, or [`rdm-firefox.xpi`](https://github.com/fromhumantohorse/rdm/releases/latest) | See [Browser extension](#browser-extension) |
 
 ## Screenshots
 

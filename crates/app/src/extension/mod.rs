@@ -5,11 +5,13 @@
 //! when a newer RDM brings a newer extension, and opens each browser where the user confirms.
 
 mod browser;
+mod running;
 
 use std::{borrow::Cow, fs, io, path::PathBuf};
 
 pub use browser::{Browser, Flavour, installed, launch};
 pub(crate) use browser::valid_key;
+pub use running::running;
 
 include!(concat!(env!("OUT_DIR"), "/extension_files.rs"));
 

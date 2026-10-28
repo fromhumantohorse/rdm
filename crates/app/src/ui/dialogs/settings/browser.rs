@@ -28,6 +28,18 @@ pub(super) fn browser_tab(ui: &mut Ui, p: &Palette, s: &mut Settings) -> Option<
             ui.add_space(4.0);
             unconfirmed_warning(ui, p);
         }
+        toggle(
+            ui,
+            &mut s.mini_button,
+            tr!("Mini bouton de téléchargement", "Mini download button"),
+            tr!("Une petite icône sans texte sur les vidéos et les modèles 3D", "A small icon without text over videos and 3D models"),
+        );
+        toggle(
+            ui,
+            &mut s.offer_extension,
+            tr!("Proposer l'extension au lancement d'un navigateur", "Offer the extension when a browser starts"),
+            tr!("Quand un navigateur sans l'extension démarre, RDM propose de l'installer", "When a browser without the extension starts, RDM offers to install it"),
+        );
     });
 
     section(ui, p, icon::FILE_ARROW_DOWN, tr!("Types de fichiers capturés", "Captured file types"), |ui| {

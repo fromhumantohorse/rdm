@@ -41,6 +41,8 @@
       .title { overflow-wrap: anywhere; font-weight: 600; }
       .detail { color: #8d97b3; font-size: 12px; margin-top: 2px; }
       li.action:hover .detail { color: #d4dbff; }
+      .btn.mini { padding: 7px; gap: 0; }
+      .btn.mini span { display: none; }
     </style>
     <button class="btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"
       stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11"/><path d="m7 11 5 5 5-5"/><path d="M5 20h14"/></svg>
@@ -48,7 +50,11 @@
     <ul class="menu" hidden></ul>`;
   const btn = root.querySelector(".btn");
   const menu = root.querySelector(".menu");
-  btn.querySelector("span").textContent = t("downloadVideo");
+  const label = btn.querySelector("span");
+  // RDM's "Mini download button" setting, cached by the service worker (see `appConfig`).
+  const setMini = (on) => btn.classList.toggle("mini", on === true);
+  ext.storage.local.get("mini").then(({ mini }) => setMini(mini), () => {});
+  ext.storage.onChanged.addListener((changes, area) => area === "local" && "mini" in changes && setMini(changes.mini.newValue));
 
   let target = null;
   let hideTimer = 0;
@@ -64,7 +70,8 @@
     const i = Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
     return `${(n / 1024 ** i).toFixed(i ? 1 : 0)} ${units[i]}`;
   };
-  const safeName = (s) => s.replace(/[<>:"/\\|?*\p{Cc}]/gu, "_").replace(/\s+/g, " ").trim().slice(0, 150) || "video";
+  const safeName = (s, fallback = "video") =>
+    s.replace(/[<>:"/\\|?*\p{Cc}]/gu, "_").replace(/\s+/g, " ").trim().slice(0, 150) || fallback;
   const pageTitle = () => safeName(top === self ? document.title : "");
   const nameOf = (url) => {
     const { pathname, hostname } = new URL(url);
@@ -436,12 +443,9 @@
   async function genericMenu() {
     const gen = ++generation;
     view = "generic";
-    const network = (await send({ kind: "list" })) ?? [];
+    const network = ((await send({ kind: "list" })) ?? []).filter((m) => !m.model);
     if (gen !== generation) return;
-    const seen = new Set();
-    const items = [...(target ? elementSources(target) : []), ...network.sort((a, b) => b.size - a.size)].filter(
-      ({ url }) => isHttp(url) && !seen.has(url) && seen.add(url),
-    );
+    const items = unique([...(target ? elementSources(target) : []), ...network.sort((a, b) => b.size - a.size)]);
     if (!items.length) {
       show(note(t("noStream")));
       return;
@@ -457,7 +461,94 @@
     );
   }
 
-  const openMenu = () => (onYouTube ? youtubeMenu() : genericMenu());
+  // ── 3D models: <model-viewer>, WebGL viewers (Sketchfab…), model links ──
+  // Mirrors `isModelUrl` in shared.js (content scripts are not modules).
+  const MODEL_FILE =
+    /\.(3dm|3ds|3mf|abc|blend|c4d|dae|drc|fbx|glb|gltf|iges|igs|ifc|ksplat|lwo|ma|max|mb|obj|off|ply|skp|splat|spz|stl|step|stp|usd|usda|usdc|usdz|vrm|vrml|wrl|x3d|x3db|x3dv|osgjs(\.gz)?)$|\/model_file(?!_wireframe)[^/]*\.(binz|bin(\.gz)?)$/i;
+  const MODEL_SOURCES = "model-viewer, a[href], a-asset-item[src], [gltf-model], [obj-model], [ply-model], inline[url], object[data], embed[src]";
+  const SCAN_EVERY = 2000;
+  const isModelTarget = (el) => el?.tagName === "CANVAS" || el?.tagName === "MODEL-VIEWER";
+  const absolute = (u) => {
+    try {
+      return new URL(u, document.baseURI).href;
+    } catch {
+      return "";
+    }
+  };
+  const isModelFile = (u) => {
+    try {
+      return MODEL_FILE.test(new URL(u).pathname);
+    } catch {
+      return false;
+    }
+  };
+  // Attribute values: a URL, `url(…)` (A-Frame) or a quoted list (X3D `inline url`).
+  const urlsIn = (value = "") => {
+    const wrapped = [...value.matchAll(/url\(\s*['"]?([^'")]+)/g)].map((m) => m[1]);
+    return wrapped.length ? wrapped : value.split(/["'\s]+/).filter(Boolean);
+  };
+
+  let hasModels = false; // the network already delivered a 3D model to this tab
+  let asked = false;
+  let scan = { at: 0, items: [] };
+  /** Models the page itself points to (cached: called while the pointer moves). */
+  function domModels() {
+    if (Date.now() - scan.at < SCAN_EVERY) return scan.items;
+    const items = [];
+    for (const el of document.querySelectorAll(MODEL_SOURCES)) {
+      if (el.tagName === "MODEL-VIEWER") {
+        // Its sources are models whatever their address looks like.
+        for (const attr of ["src", "ios-src"]) if (el.getAttribute(attr)) items.push(absolute(el.getAttribute(attr)));
+        continue;
+      }
+      const values = ["href", "src", "data", "url", "gltf-model", "obj-model", "ply-model"].map((a) => el.getAttribute(a)).filter(Boolean);
+      for (const u of values.flatMap(urlsIn).map(absolute)) if (isModelFile(u)) items.push(u);
+    }
+    scan = { at: Date.now(), items: items.filter(isHttp).map((url) => ({ url, size: 0, type: "", model: true })) };
+    return scan.items;
+  }
+  const modelsHere = () => hasModels || domModels().length > 0;
+
+  const unique = (items) => {
+    const seen = new Set();
+    return items.filter(({ url }) => isHttp(url) && !seen.has(url) && seen.add(url));
+  };
+  // Sketchfab titles: "Name - Download Free 3D model by Author - Sketchfab" → "Name".
+  const modelBase = () => safeName(document.title.replace(/\s+-\s+(Download Free\s+)?3D model by\s.*$/i, ""), "model");
+  /** Generic file names (`file.binz`, `scene.gltf`, hashes) get the page's title in front. */
+  const modelName = (url, base) => {
+    const name = nameOf(url);
+    return /^(file|model_file|model|scene|mesh|object|untitled|default|asset|data)[._-]|^[\da-f-]{20,}\./i.test(name)
+      ? safeName(`${base} - ${name}`, name)
+      : name;
+  };
+  const formatOf = (name) => (/\.([^.]+(\.gz)?)$/i.exec(name)?.[1] ?? "").toUpperCase();
+
+  async function modelMenu() {
+    const gen = ++generation;
+    view = "model";
+    const network = ((await send({ kind: "list" })) ?? []).filter((m) => m.model);
+    if (gen !== generation) return;
+    if (network.length) hasModels = true;
+    const items = unique([...domModels(), ...network.sort((a, b) => b.size - a.size)]);
+    if (!items.length) {
+      show(note(t("noModel")));
+      return;
+    }
+    const base = modelBase();
+    show(
+      section(t("detectedModels")),
+      ...items.map((m) => {
+        const name = modelName(m.url, base);
+        return action(name, [human(m.size), formatOf(name)].filter(Boolean).join(" · "), m.url, name);
+      }),
+    );
+  }
+
+  const openMenu = () => {
+    if (isModelTarget(target)) return modelMenu();
+    return onYouTube ? youtubeMenu() : genericMenu();
+  };
 
   // ── Positioning ───────────────────────────────────────────────────────
   function place() {
@@ -477,6 +568,9 @@
     if (host.parentNode !== parent) parent.append(host);
     if (target !== el) menu.hidden = true;
     target = el;
+    label.textContent = t(isModelTarget(el) ? "downloadModel" : "downloadVideo");
+    btn.title = label.textContent; // the mini button's only text
+    btn.setAttribute("aria-label", label.textContent);
     host.style.display = "block";
     place();
   }
@@ -496,10 +590,19 @@
   // Live collections: no DOM query per mouse move, and a free "this page has no media" test.
   const videos = document.getElementsByTagName("video");
   const audios = document.getElementsByTagName("audio");
+  const viewers = document.getElementsByTagName("model-viewer");
+  // WebGL viewers draw on a <canvas>: only a 3D target once this page is known to carry models.
+  const canvases = document.getElementsByTagName("canvas");
 
   // Players cover <video> with overlays (sometimes `pointer-events: none`), so hit-test by geometry.
   const mediaAt = (x, y) => {
-    for (const list of [videos, audios]) {
+    if (canvases.length && !hasModels && !asked) {
+      asked = true; // models fetched before this script ran
+      send({ kind: "list" }).then((list) => list?.some((m) => m.model) && (hasModels = true));
+    }
+    const lists = [videos, audios, viewers];
+    if (canvases.length && modelsHere()) lists.push(canvases);
+    for (const list of lists) {
       for (const el of list) {
         const r = el.getBoundingClientRect();
         if (r.width >= MIN_W && r.height >= MIN_H && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return el;
@@ -512,7 +615,7 @@
     "pointermove",
     ({ clientX, clientY }) => {
       // Most pages have no media at all: nothing to do, not even a layout read.
-      if (frame || (!target && !videos.length && !audios.length)) return;
+      if (frame || (!target && !videos.length && !audios.length && !viewers.length && !canvases.length)) return;
       frame = requestAnimationFrame(() => {
         frame = 0;
         const el = mediaAt(clientX, clientY);
@@ -560,7 +663,11 @@
   }
 
   ext.runtime.onMessage.addListener((msg) => {
-    if (msg?.kind === "media-changed" && !menu.hidden && view === "generic") genericMenu();
+    if (msg?.kind === "media-changed") {
+      if (msg.model) hasModels = true;
+      if (!menu.hidden && view === "generic" && !msg.model) genericMenu();
+      if (!menu.hidden && view === "model" && msg.model) modelMenu();
+    }
     if (msg?.kind === "toast") toast(msg.text);
   });
 })();

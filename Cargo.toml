@@ -3,11 +3,11 @@ resolver = "3"
 members = ["crates/domain", "crates/engine", "crates/app"]
 
 [workspace.package]
-version = "0.3.12"
+version = "0.3.13"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
-repository = "https://github.com/vincentxjoubert-lang/rdm"
+repository = "https://github.com/fromhumantohorse/rdm"
 publish = false
 
 [workspace.dependencies]

@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { browserKey, dispositionName, downloadName, isCapturable, isHls, isMediaType, isMediaUrl, siteOf } from "../shared.js";
+import { browserKey, dispositionName, downloadName, isCapturable, isHls, isMediaType, isMediaUrl, isModelType, isModelUrl, siteOf } from "../shared.js";
 
 const LIST = "zip mp4 webm iso 7z";
 
@@ -40,6 +40,19 @@ test("media and HLS detection", () => {
   assert.ok(!isMediaUrl("not a url"));
   assert.ok(isMediaType("video/mp4"));
   assert.ok(!isMediaType("video/mp2t"));
+});
+
+test("3D model detection", () => {
+  assert.ok(isModelUrl("https://cdn.io/m/Helmet.glb?v=2"));
+  assert.ok(isModelUrl("https://cdn.io/m/scene.GLTF"));
+  assert.ok(isModelUrl("https://media.sketchfab.com/models/x/y/files/z/file.osgjs.gz"));
+  assert.ok(isModelUrl("https://media.sketchfab.com/models/x/y/files/z/model_file.binz"));
+  assert.ok(!isModelUrl("https://media.sketchfab.com/models/x/y/files/z/model_file_wireframe.binz"));
+  assert.ok(!isModelUrl("https://cdn.io/data.bin"));
+  assert.ok(!isModelUrl("not a url"));
+  assert.ok(isModelType("model/gltf-binary"));
+  assert.ok(isModelType("application/sla"));
+  assert.ok(!isModelType("application/octet-stream"));
 });
 
 test("site comparison for SameSite cookies", () => {
