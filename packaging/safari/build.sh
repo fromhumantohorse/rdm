@@ -18,8 +18,13 @@ work="$out/work"
 mkdir -p "$work"
 cp -R "$root/extension" "$work/extension"
 rm -rf "$work/extension/test"
+# The converter says Safari does not take `background.type`, and a worker starting with `import`
+# would not even load: a plain script here, with shared.js inside.
+{ sed 's/^export //' "$root/extension/shared.js"; sed '/^import /d' "$root/extension/background.js"; } >"$work/extension/background.js"
+rm "$work/extension/shared.js"
+if command -v node >/dev/null; then node --check "$work/extension/background.js"; fi
 # 16.4: the first Safari with `storage.session`.
-jq 'del(.key, .minimum_chrome_version)
+jq 'del(.key, .minimum_chrome_version, .background.type)
     | .browser_specific_settings = {safari: {strict_min_version: "16.4"}}
     | .permissions -= ["downloads", "nativeMessaging"]' \
     "$root/extension/manifest.json" >"$work/extension/manifest.json"
@@ -28,8 +33,12 @@ xcrun safari-web-extension-converter "$work/extension" --project-location "$work
     --bundle-identifier org.rdm.rdm --macos-only --swift --no-open --no-prompt --force --copy-resources
 project=$(find "$work/project" -maxdepth 3 -name '*.xcodeproj' | head -n 1)
 [ -n "$project" ] || { echo "build.sh: the converter made no Xcode project" >&2; exit 1; }
+# The extension alone: RDM.app is ours, and Xcode refuses the application the converter writes around
+# it (org.rdm.RDM, whatever --bundle-identifier says: not a prefix of org.rdm.rdm.Extension).
+target=$(xcodebuild -list -project "$project" | sed -n 's/^ *\(.*Extension\)$/\1/p' | head -n 1)
+[ -n "$target" ] || { echo "build.sh: no extension target in the Xcode project" >&2; exit 1; }
 # Signed by build-app.sh, with the rest of RDM.app.
-xcodebuild -quiet -project "$project" -alltargets -configuration Release \
+xcodebuild -quiet -project "$project" -target "$target" -configuration Release \
     SYMROOT="$work/build" ARCHS=arm64 MACOSX_DEPLOYMENT_TARGET=11.0 \
     MARKETING_VERSION="$version" CURRENT_PROJECT_VERSION="$version" CODE_SIGNING_ALLOWED=NO
 
