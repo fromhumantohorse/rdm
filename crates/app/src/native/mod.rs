@@ -340,6 +340,20 @@ fn spawn_detached(exe: &Path, minimized: bool) -> io::Result<()> {
 fn spawn_detached(exe: &Path, minimized: bool) -> io::Result<()> {
     use std::os::unix::process::CommandExt;
 
+    // macOS: an application in its bundle starts through the system. As the browser's child, the
+    // system would ask the user's permissions (the Downloads folder…) in the browser's name.
+    #[cfg(target_os = "macos")]
+    if let Some(bundle) = exe.ancestors().find(|p| p.extension().is_some_and(|e| e == "app")) {
+        let mut open = std::process::Command::new("/usr/bin/open");
+        open.arg("-a").arg(bundle);
+        if minimized {
+            open.args(["--args", crate::autostart::MINIMIZED_FLAG]);
+        }
+        return open.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().and_then(|s| {
+            if s.success() { Ok(()) } else { Err(io::Error::other("open failed")) }
+        });
+    }
+
     let mut command = std::process::Command::new(exe);
     if minimized {
         command.arg(crate::autostart::MINIMIZED_FLAG);

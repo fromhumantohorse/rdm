@@ -146,7 +146,8 @@ fn resolves_here(route: &Route) -> bool {
 }
 
 /// A proxy the system sets (what the engine follows in `Route::System`): the `*_PROXY` variables,
-/// or on Windows the proxy of the Internet settings.
+/// or on Windows the proxy of the Internet settings, on macOS that of the network settings (asked
+/// once per session).
 fn system_proxy_set() -> bool {
     let variable = ["http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"]
         .iter()
@@ -158,8 +159,25 @@ fn system_proxy_set() -> bool {
         let enabled = settings.is_ok_and(|k| k.get_value::<u32, _>("ProxyEnable").is_ok_and(|v| v != 0));
         variable || enabled
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        static SET: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        variable
+            || *SET.get_or_init(|| {
+                std::process::Command::new("/usr/sbin/scutil").arg("--proxy").output().is_ok_and(|out| scutil_names_a_proxy(&String::from_utf8_lossy(&out.stdout)))
+            })
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     variable
+}
+
+/// Whether `scutil --proxy` shows a proxy turned on.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code, reason = "macOS only, tested everywhere"))]
+fn scutil_names_a_proxy(output: &str) -> bool {
+    output.lines().any(|line| {
+        let line: String = line.split_whitespace().collect();
+        matches!(line.as_str(), "HTTPEnable:1" | "HTTPSEnable:1" | "SOCKSEnable:1" | "ProxyAutoConfigEnable:1")
+    })
 }
 
 /// `host:port` alone means an HTTP proxy.
@@ -245,6 +263,12 @@ mod tests {
     fn names_are_kept_out_of_the_lan_only_where_resolved_here() {
         assert!(resolves_here(&Route::Direct));
         assert!(!resolves_here(&Route::Proxy { url: "http://proxy.lan:3128".into(), user: String::new(), password: String::new() }));
+    }
+
+    #[test]
+    fn scutil_says_when_a_proxy_is_on() {
+        assert!(scutil_names_a_proxy("<dictionary> {\n  HTTPEnable : 1\n  HTTPPort : 3128\n  HTTPProxy : proxy.lan\n}\n"));
+        assert!(!scutil_names_a_proxy("<dictionary> {\n  HTTPEnable : 0\n  FTPPassive : 1\n}\n"));
     }
 
     #[test]

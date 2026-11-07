@@ -56,6 +56,9 @@ const MAX_RETRY_AFTER: Duration = Duration::from_secs(30);
 /// Below this, a file comes as fast on one connection: no extra request to learn about parts.
 const WORTH_PARTS: u64 = 4 << 20;
 
+/// The most a probe's answer may hold to be read for its connection's sake (it asked for one byte).
+const MAX_DRAINED: u64 = 64 << 10;
+
 /// What the first request of a download asks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Ask {
@@ -177,8 +180,9 @@ async fn attempt_probe(client: &Client, url: &Url, headers: &HeaderMap, ask: Ask
         return Ok((probe, Some(res)));
     }
     // Drain the 1-byte body so this warm (TLS-established) connection returns to the pool and
-    // the first worker reuses it. Never for a 200: that body would be the whole file.
-    if partial {
+    // the first worker reuses it. Never for a 200 (that body would be the whole file), nor for a
+    // server answering more than it was asked: read whole, it could fill the memory.
+    if partial && res.content_length().is_some_and(|n| n <= MAX_DRAINED) {
         let _ = res.bytes().await;
     }
     Ok((probe, None))
@@ -304,7 +308,9 @@ pub fn sanitize_file_name(name: &str) -> String {
     match (stem.is_empty(), ext) {
         (true, _) => "download".into(),
         (false, Some(ext)) => format!("{stem}.{ext}"),
-        (false, None) => stem,
+        // A cut can leave dots at the end, where Windows drops them: the file would not be the one
+        // RDM looks for afterwards.
+        (false, None) => stem.trim_end_matches([' ', '.']).to_owned(),
     }
 }
 
@@ -373,6 +379,30 @@ mod tests {
         let long = format!("{}.mp4", "a".repeat(500));
         let safe = sanitize_file_name(&long);
         assert!(safe.chars().count() <= MAX_NAME_CHARS && safe.ends_with(".mp4"));
+        // Cut right after a dot: Windows would drop it, and RDM look for a file that is not there.
+        let dotted = format!("{}.{}", "a".repeat(MAX_NAME_CHARS - 1), "b".repeat(40));
+        assert_eq!(sanitize_file_name(&dotted), "a".repeat(MAX_NAME_CHARS - 1));
+    }
+
+    /// A server answering far more than the one byte asked for is not read to its end.
+    #[tokio::test]
+    async fn a_probe_does_not_read_an_oversized_answer() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url: Url = format!("http://{}/f.bin", listener.local_addr().unwrap()).parse().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 1024];
+            let _ = socket.read(&mut request).await;
+            let head = b"HTTP/1.1 206 Partial Content\r\ncontent-range: bytes 0-0/100\r\ncontent-length: 1073741824\r\n\r\n";
+            let _ = socket.write_all(head).await;
+            std::future::pending::<()>().await; // the announced gigabyte never comes
+        });
+        let client = crate::client_with(&crate::ClientOptions { route: crate::Route::Direct, ..crate::ClientOptions::default() }).unwrap();
+
+        let found = tokio::time::timeout(Duration::from_secs(5), probe(&client, &url, &HeaderMap::new())).await;
+
+        assert_eq!(found.expect("answered at once").unwrap().size, Some(100));
     }
 
     /// Regression (Linux: "File name too long"): a long Japanese, Cyrillic or emoji title stays

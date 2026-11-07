@@ -210,6 +210,7 @@
  "Queues": "Hàng đợi",
  "Quit": "Thoát",
  "RDM adapts the number of connections to the network and the server by itself: this setting is only a ceiling.": "RDM tự điều chỉnh số kết nối theo mạng và máy chủ: cài đặt này chỉ là mức trần.",
+ "RDM cannot open its window: {e}": "RDM không thể mở cửa sổ của mình: {e}",
  "RDM cannot save its files: {e}": "RDM không thể lưu các tệp của mình: {e}",
  "RDM cannot start: the local port 127.0.0.1:{port} is taken by a program that does not answer (a stuck RDM, or another session's?). Close it (Task Manager), then start RDM again.": "RDM không thể khởi động: cổng cục bộ 127.0.0.1:{port} đang bị một chương trình không phản hồi chiếm dụng (RDM bị treo, hoặc RDM của phiên khác?). Hãy đóng nó (Trình quản lý tác vụ) rồi khởi động lại RDM.",
  "RDM cannot start: {e}": "Không thể khởi động RDM: {e}",

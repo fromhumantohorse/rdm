@@ -10,6 +10,7 @@ test("captures listed and split-archive extensions", () => {
   assert.ok(isCapturable(LIST, "https://x.io/a/Video.MP4?token=1"));
   assert.ok(isCapturable(LIST, "archive.r01"));
   assert.ok(isCapturable(LIST, "archive.r1"));
+  assert.ok(isCapturable("iso", "backup.z01"), "parts of a split zip, as `domain::is_capturable`");
   assert.ok(isCapturable(LIST, "backup.7z.001"));
   assert.ok(isCapturable(LIST, "film.webm"));
   assert.ok(!isCapturable(LIST, "page.html"));

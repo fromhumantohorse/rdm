@@ -1,5 +1,6 @@
 [package]
 name = "rdm"
+description = "Fast multi-connection download manager"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -42,7 +43,6 @@ ring = "0.17"
 sys-locale = "0.3"
 # Clipboard watching (links copied anywhere).
 arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
-notify-rust = "4.18"
 # KSNI backend on Linux: pure-Rust D-Bus tray, no GTK / libappindicator needed.
 tray-icon = { version = "0.25", default-features = false, features = ["ksni"] }
 
@@ -53,6 +53,15 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphic
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# macOS notifications go through the system's `osascript` (see `notify`): this crate's backend needs
+# Objective-C compiled at build time for an API Apple deprecated.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+notify-rust = "4.18"
+
+# Calling the few AppKit and Foundation methods RDM needs (already in the tree through winit).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
 
 [build-dependencies]
 winresource = "0.1"

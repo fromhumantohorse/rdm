@@ -33,6 +33,11 @@ pub fn caption(ui: &mut Ui, text: &str) {
     ui.label(RichText::new(text).font(theme::semibold(10.5)).color(p.faint).extra_letter_spacing(1.0));
 }
 
+/// A text naming the Ctrl key, as this computer's keyboard says it: Command on macOS.
+pub fn shortcut(text: &str) -> String {
+    if cfg!(target_os = "macos") { text.replace("Ctrl", "Cmd").replace("Strg", "Cmd") } else { text.to_owned() }
+}
+
 /// A keyboard key.
 pub fn kbd(ui: &mut Ui, key: &str) {
     let p = Palette::of(ui);

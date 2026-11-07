@@ -210,6 +210,7 @@
  "Queues": "Очереди",
  "Quit": "Выход",
  "RDM adapts the number of connections to the network and the server by itself: this setting is only a ceiling.": "RDM сам подстраивает число соединений под сеть и сервер: эта настройка — лишь потолок.",
+ "RDM cannot open its window: {e}": "RDM не может открыть своё окно: {e}",
  "RDM cannot save its files: {e}": "RDM не удаётся сохранить свои файлы: {e}",
  "RDM cannot start: the local port 127.0.0.1:{port} is taken by a program that does not answer (a stuck RDM, or another session's?). Close it (Task Manager), then start RDM again.": "RDM не может запуститься: локальный порт 127.0.0.1:{port} занят программой, которая не отвечает (зависший RDM или RDM из другого сеанса?). Закройте её (Диспетчер задач) и запустите RDM снова.",
  "RDM cannot start: {e}": "Не удаётся запустить RDM: {e}",

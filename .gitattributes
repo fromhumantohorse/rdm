@@ -1,2 +1,8 @@
 # Signed files used by the tests: byte for byte, never line-ending converted.
 crates/app/testdata/** -text
+
+# Read by Linux and macOS whatever system checked them out (a Windows clone with core.autocrlf would
+# otherwise break their first line, and the packages built from it).
+*.sh text eol=lf
+*.desktop text eol=lf
+*.plist text eol=lf

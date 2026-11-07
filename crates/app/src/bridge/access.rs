@@ -53,7 +53,7 @@ fn guard_with(headers: &HeaderMap, token: &str, access: Access, firefox: impl Fn
     match headers.get(ORIGIN).map(|o| o.to_str()) {
         // The Firefox extension's reads: they say which browser they come from. A web page's
         // simple GET carries no `Origin` either, but cannot add that header (it would need a CORS
-        // preflight, never answered): it cannot even learn that RDM is installed.
+        // preflight, never answered): it gets a refusal, and cannot read a thing.
         None if access == Access::Read && browser_of(headers).is_some_and(crate::extension::valid_key) => Ok(()),
         // A local program: only the user's own (it could read the token in the user's files).
         None if !token.is_empty() && local::token_matches(token, headers.get(local::TOKEN_HEADER).map(|v| v.as_bytes())) => Ok(()),

@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>RDM</string>
+	<key>CFBundleDisplayName</key>
+	<string>RDM</string>
+	<key>CFBundleIdentifier</key>
+	<string>org.rdm.rdm</string>
+	<key>CFBundleExecutable</key>
+	<string>rdm</string>
+	<key>CFBundleIconFile</key>
+	<string>rdm</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>__VERSION__</string>
+	<key>CFBundleVersion</key>
+	<string>__VERSION__</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>11.0</string>
+	<key>LSRequiresNativeExecution</key>
+	<true/>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>RDM saves your downloads in this folder.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>RDM saves your downloads in the folder you chose.</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>RDM saves your downloads in the folder you chose.</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>RDM saves your downloads in the folder you chose.</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>RDM saves your downloads in the folder you chose.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>RDM downloads files from devices of your network when you ask it to (a NAS, for example).</string>
+</dict>
+</plist>

@@ -166,7 +166,9 @@ impl Default for Settings {
             extension_offered: false,
             auto_update: false,
             language: Language::Auto,
-            clipboard: ClipboardMode::Ask,
+            // macOS may ask the user's leave for each program reading the clipboard: not out of
+            // the blue at the first start, only for someone who turned this on.
+            clipboard: if cfg!(target_os = "macos") { ClipboardMode::Off } else { ClipboardMode::Ask },
             existing: ExistingFile::Ask,
             proxy: Proxy::default(),
         }

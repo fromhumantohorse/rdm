@@ -23,5 +23,5 @@ pub use bars::{pieces_progress, progress};
 pub use buttons::{ICON_BUTTON, accent_button, accent_button_width, ghost_button, icon_button};
 pub use charts::{area_chart, donut, spinner};
 pub use inputs::{field, segmented, tab_bar, toggle};
-pub use labels::{caption, icon_text, kbd, paint_pill, place};
+pub use labels::{caption, icon_text, kbd, paint_pill, place, shortcut};
 pub use paint::{glow, gradient, soft_shadow};

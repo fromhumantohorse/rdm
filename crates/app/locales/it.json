@@ -210,6 +210,7 @@
  "Queues": "Code",
  "Quit": "Esci",
  "RDM adapts the number of connections to the network and the server by itself: this setting is only a ceiling.": "RDM adatta da solo il numero di connessioni alla rete e al server: questa impostazione è solo un tetto.",
+ "RDM cannot open its window: {e}": "RDM non riesce ad aprire la sua finestra: {e}",
  "RDM cannot save its files: {e}": "RDM non riesce a salvare i propri file: {e}",
  "RDM cannot start: the local port 127.0.0.1:{port} is taken by a program that does not answer (a stuck RDM, or another session's?). Close it (Task Manager), then start RDM again.": "RDM non può avviarsi: la porta locale 127.0.0.1:{port} è occupata da un programma che non risponde (un RDM bloccato o quello di un'altra sessione?). Chiudilo (Gestione attività), poi riavvia RDM.",
  "RDM cannot start: {e}": "RDM non può avviarsi: {e}",

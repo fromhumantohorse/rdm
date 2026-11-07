@@ -1,5 +1,5 @@
-//! Desktop notifications (Windows toast / freedesktop D-Bus): a download completes, a VirusTotal
-//! verdict arrives.
+//! Desktop notifications (Windows toast / freedesktop D-Bus / macOS Notification Center): a download
+//! completes, a VirusTotal verdict arrives.
 
 use crate::virustotal::Report;
 
@@ -64,8 +64,8 @@ pub fn virustotal(file_name: &str, verdict: Result<&Report, &crate::virustotal::
     show(&summary, &body);
 }
 
-/// RDM cannot run: said in a message box (Windows) or a notification (Linux), waited for — the
-/// process ends right after.
+/// RDM cannot run: said in a message box (Windows) or a notification (Linux, macOS), waited for —
+/// the process ends right after.
 pub fn fatal(text: &str) {
     eprintln!("RDM: {text}");
     #[cfg(windows)]
@@ -76,7 +76,9 @@ pub fn fatal(text: &str) {
         // SAFETY: NUL-terminated UTF-16 strings that outlive the call; no owner window.
         unsafe { MessageBoxW(std::ptr::null_mut(), text.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR | MB_SETFOREGROUND) };
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    deliver("RDM", text);
+    #[cfg(all(unix, not(target_os = "macos")))]
     {
         let _ = notify_rust::Notification::new().appname("RDM").summary("RDM").body(&escape_markup(text)).icon("rdm").hint(notify_rust::Hint::DesktopEntry("rdm".into())).show();
     }
@@ -85,18 +87,29 @@ pub fn fatal(text: &str) {
 /// Fire-and-forget: showing a notification may block on D-Bus or WinRT for a moment.
 fn show(summary: &str, body: &str) {
     // Linux notification servers may interpret the body as markup.
-    let body = if cfg!(windows) { body.to_owned() } else { escape_markup(body) };
+    let body = if cfg!(all(unix, not(target_os = "macos"))) { escape_markup(body) } else { body.to_owned() };
     let summary = summary.to_owned();
-    std::thread::spawn(move || {
-        let mut n = notify_rust::Notification::new();
-        n.appname("RDM").summary(&summary).body(&body);
-        #[cfg(windows)]
-        n.app_id(APP_ID);
-        // desktop-entry: the notification center files it under RDM, with its icon, and keeps it.
-        #[cfg(not(windows))]
-        n.icon("rdm").hint(notify_rust::Hint::DesktopEntry("rdm".into()));
-        let _ = n.show();
-    });
+    std::thread::spawn(move || deliver(&summary, &body));
+}
+
+#[cfg(not(target_os = "macos"))]
+fn deliver(summary: &str, body: &str) {
+    let mut n = notify_rust::Notification::new();
+    n.appname("RDM").summary(summary).body(body);
+    #[cfg(windows)]
+    n.app_id(APP_ID);
+    // desktop-entry: the notification center files it under RDM, with its icon, and keeps it.
+    #[cfg(not(windows))]
+    n.icon("rdm").hint(notify_rust::Hint::DesktopEntry("rdm".into()));
+    let _ = n.show();
+}
+
+/// Through the system's script runner. Given as arguments, never as script text: a file name from
+/// the Internet cannot run AppleScript.
+#[cfg(target_os = "macos")]
+fn deliver(summary: &str, body: &str) {
+    let script = ["-e", "on run argv", "-e", "display notification (item 2 of argv) with title (item 1 of argv)", "-e", "end run", "--"];
+    let _ = std::process::Command::new("/usr/bin/osascript").args(script).arg(summary).arg(body).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
 }
 
 /// A browser started without the extension: offers to install it. `on_install` runs (on another

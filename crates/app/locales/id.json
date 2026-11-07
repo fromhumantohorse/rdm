@@ -210,6 +210,7 @@
  "Queues": "Antrean",
  "Quit": "Keluar",
  "RDM adapts the number of connections to the network and the server by itself: this setting is only a ceiling.": "RDM menyesuaikan jumlah koneksi dengan jaringan dan server secara otomatis: pengaturan ini hanya batas atas.",
+ "RDM cannot open its window: {e}": "RDM tidak dapat membuka jendelanya: {e}",
  "RDM cannot save its files: {e}": "RDM tidak dapat menyimpan berkasnya: {e}",
  "RDM cannot start: the local port 127.0.0.1:{port} is taken by a program that does not answer (a stuck RDM, or another session's?). Close it (Task Manager), then start RDM again.": "RDM tidak dapat dimulai: port lokal 127.0.0.1:{port} dipakai oleh program yang tidak merespons (RDM yang macet, atau RDM dari sesi lain?). Tutup program itu (Task Manager), lalu jalankan RDM lagi.",
  "RDM cannot start: {e}": "RDM tidak dapat dimulai: {e}",

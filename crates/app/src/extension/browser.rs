@@ -142,9 +142,9 @@ impl Browser {
         }
     }
 
-    /// The browser's executable, if it is installed.
+    /// The browser's executable (its application bundle on macOS), if it is installed.
     pub fn find(self) -> Option<PathBuf> {
-        self.0.exe.clone().filter(|p| p.is_file()).or_else(|| imp::find(self.key()))
+        self.0.exe.clone().filter(|p| p.exists()).or_else(|| imp::find(self.key()))
     }
 
     /// The browser at `exe` (added by the user): its family from its files, named after the file.
@@ -166,6 +166,7 @@ fn title(word: &str) -> String {
 /// A browser's family, from the files beside its executable: Firefox and every derivative ship
 /// `xul.dll` (`libxul.so`); Chromium-based browsers `.pak` resources (in a version sub-folder on
 /// Windows). `None`: not a browser the extension can run in.
+#[cfg(not(target_os = "macos"))]
 fn flavour_of(exe: &Path) -> Option<Flavour> {
     let dir = exe.parent()?;
     let names = |dir: &Path| -> Vec<String> {
@@ -178,6 +179,21 @@ fn flavour_of(exe: &Path) -> Option<Flavour> {
     let chromium = |list: &[String]| list.iter().any(|n| n.ends_with(".pak") || n == "chrome.dll" || n == "msedge.dll");
     let versions = fs::read_dir(dir).map(|e| e.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect::<Vec<_>>()).unwrap_or_default();
     (chromium(&here) || versions.iter().any(|v| chromium(&names(v)))).then_some(Flavour::Chromium)
+}
+
+/// macOS: from the application bundle: Firefox and every derivative hold `XUL`, Chromium-based
+/// browsers a `<name> Framework.framework` (Electron applications too, under that name).
+#[cfg(target_os = "macos")]
+fn flavour_of(app: &Path) -> Option<Flavour> {
+    if app.join("Contents/MacOS/XUL").is_file() {
+        return Some(Flavour::Firefox);
+    }
+    let frameworks = fs::read_dir(app.join("Contents/Frameworks")).ok()?;
+    frameworks
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .any(|name| name.ends_with(" Framework.framework") && name != "Electron Framework.framework")
+        .then_some(Flavour::Chromium)
 }
 
 /// The browsers of this computer: those Windows lists as installed (any browser, known here or
@@ -219,7 +235,17 @@ pub fn installed(custom: &[PathBuf]) -> Vec<Browser> {
 /// Opens `target` (a page or a package) in the browser whose executable is `exe`.
 pub fn launch(exe: &Path, target: &str) -> io::Result<()> {
     use std::process::{Command, Stdio};
-    let mut child = Command::new(exe).arg(target).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()?;
+    // macOS: a second copy of a browser already running would refuse its profile: the system hands
+    // the page to the running one.
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut open = Command::new("/usr/bin/open");
+        open.arg("-a").arg(exe);
+        open
+    };
+    #[cfg(not(target_os = "macos"))]
+    let mut command = Command::new(exe);
+    let mut child = command.arg(target).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()?;
     // Reaped off the UI thread: the browser may run for hours (Linux would keep a zombie otherwise).
     std::thread::spawn(move || {
         let _ = child.wait();
@@ -293,7 +319,28 @@ mod imp {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+mod imp {
+    use std::path::PathBuf;
+
+    /// The applications of this computer that are browsers (whatever their name), with their bundle.
+    pub fn registered() -> Vec<(String, PathBuf)> {
+        let home = directories::BaseDirs::new().map(|d| d.home_dir().join("Applications"));
+        std::iter::once(PathBuf::from("/Applications"))
+            .chain(home)
+            .filter_map(|dir| std::fs::read_dir(dir).ok())
+            .flat_map(|apps| apps.flatten().map(|app| app.path()))
+            .filter(|app| app.extension().is_some_and(|e| e == "app") && super::flavour_of(app).is_some())
+            .filter_map(|app| Some((app.file_stem()?.to_string_lossy().into_owned(), app)))
+            .collect()
+    }
+
+    pub fn find(key: &str) -> Option<PathBuf> {
+        registered().into_iter().find(|(name, _)| super::key_of(name) == key).map(|(_, app)| app)
+    }
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
 mod imp {
     use std::path::PathBuf;
 

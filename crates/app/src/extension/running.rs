@@ -17,6 +17,12 @@ const NAMES: &[(&str, &str)] = &[
     ("mullvad", "mullvad"),
     ("zen", "zen"),
     ("firefox", "firefox"),
+    // macOS names them in full (`Google Chrome.app/Contents/MacOS/Google Chrome`).
+    ("google chrome", "chrome"),
+    ("microsoft edge", "edge"),
+    ("brave browser", "brave"),
+    ("mullvad browser", "mullvad"),
+    ("zen browser", "zen"),
 ];
 
 /// The browser an executable belongs to, from its last two path components: `firefox-bin`,
@@ -80,7 +86,29 @@ mod imp {
     }
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(target_os = "macos")]
+mod imp {
+    /// The program of every process this account can see.
+    pub fn executables() -> Vec<String> {
+        // SAFETY: a null buffer only asks how many processes there are.
+        let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+        let mut pids = vec![0 as libc::c_int; usize::try_from(count).unwrap_or(0) + 32]; // some may start meanwhile
+        let Ok(bytes) = libc::c_int::try_from(pids.len() * size_of::<libc::c_int>()) else { return Vec::new() };
+        // SAFETY: `pids` holds `bytes` writable bytes.
+        let listed = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+        pids.truncate(usize::try_from(listed).unwrap_or(0));
+        let path_of = |pid| {
+            let mut path = vec![0u8; 4096]; // PROC_PIDPATHINFO_MAXSIZE
+            // SAFETY: `path` holds that many writable bytes.
+            let len = unsafe { libc::proc_pidpath(pid, path.as_mut_ptr().cast(), 4096) };
+            path.truncate(usize::try_from(len).ok()?);
+            (!path.is_empty()).then(|| String::from_utf8_lossy(&path).into_owned())
+        };
+        pids.into_iter().filter_map(path_of).collect()
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 mod imp {
     pub fn executables() -> Vec<String> {
         Vec::new()
@@ -106,10 +134,21 @@ mod tests {
             ("C:\\Program Files\\Mozilla Firefox\\firefox.exe", "firefox"),
             ("msedge.exe", "edge"),
             ("Brave.exe", "brave"),
+            ("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "chrome"),
+            ("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge", "edge"),
+            ("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser", "brave"),
+            ("/Applications/Firefox.app/Contents/MacOS/firefox", "firefox"),
         ] {
             assert_eq!(key_of_exe(exe), Some(key), "{exe}");
         }
-        for exe in ["/usr/bin/zenity", "/usr/bin/bash", "/home/firefoxfan/bin/tool", "/usr/bin/operator"] {
+        for exe in [
+            "/usr/bin/zenity",
+            "/usr/bin/bash",
+            "/home/firefoxfan/bin/tool",
+            "/usr/bin/operator",
+            // A browser's helpers are not the browser starting.
+            "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer)",
+        ] {
             assert_eq!(key_of_exe(exe), None, "{exe}");
         }
     }

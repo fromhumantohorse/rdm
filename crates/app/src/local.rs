@@ -3,7 +3,7 @@
 //!
 //! - **They prove they are the user's**: RDM writes a random token, renewed at each start, in a
 //!   file only the user can read (the per-user settings folder: private profile on Windows, 0700
-//!   on Linux); they send it back (`x-rdm-token`). Another account of the computer, or any program
+//!   on Linux and macOS); they send it back (`x-rdm-token`). Another account of the computer, or any program
 //!   that cannot read the user's files, is refused — before, "no `Origin`" was enough.
 //! - **RDM proves it is RDM**: before sending anything (the extension's requests carry the page's
 //!   cookies), they check that the program listening on the bridge's port runs as the same user.
@@ -315,14 +315,105 @@ mod imp {
     }
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
+/// The system's table of TCP sockets with their owners (what `netstat` reads). Apple documents
+/// neither it nor its layout, which is why it is only believed once it shows this very process's
+/// own listener under this user: otherwise "cannot tell", as on Linux and Windows.
+#[cfg(target_os = "macos")]
 mod imp {
-    pub fn listeners_are_mine(_: u16) -> bool {
-        true
+    use std::net::{Ipv4Addr, SocketAddr, TcpListener};
+
+    use super::pcb::{self, Socket};
+
+    fn my_uid() -> u32 {
+        // SAFETY: `getuid` cannot fail and has no side effect.
+        unsafe { libc::getuid() }
     }
 
-    pub fn peer_is_mine(_: std::net::SocketAddr, _: u16) -> bool {
-        true
+    fn raw_table() -> Option<Vec<u8>> {
+        const NAME: &std::ffi::CStr = c"net.inet.tcp.pcblist_n";
+        let mut size = 0usize;
+        // SAFETY: a null buffer only asks for the size needed.
+        let asked = unsafe { libc::sysctlbyname(NAME.as_ptr(), std::ptr::null_mut(), &mut size, std::ptr::null_mut(), 0) };
+        if asked != 0 {
+            return None;
+        }
+        let mut buffer = vec![0u8; size + size / 4 + 4096]; // sockets come and go between the two calls
+        let mut len = buffer.len();
+        // SAFETY: `buffer` holds `len` writable bytes.
+        let read = unsafe { libc::sysctlbyname(NAME.as_ptr(), buffer.as_mut_ptr().cast(), &mut len, std::ptr::null_mut(), 0) };
+        (read == 0).then(|| {
+            buffer.truncate(len);
+            buffer
+        })
+    }
+
+    fn table() -> Option<Vec<Socket>> {
+        let own = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).ok()?;
+        let port = own.local_addr().ok()?.port();
+        let raw = raw_table()?;
+        pcb::UID_OFFSETS.into_iter().map(|uid_at| pcb::sockets(&raw, uid_at)).find(|sockets| {
+            sockets.iter().any(|s| s.local_port == port && s.foreign_port == 0 && s.uid == my_uid())
+        })
+    }
+
+    pub fn listeners_are_mine(port: u16) -> bool {
+        table().is_none_or(|sockets| sockets.iter().filter(|s| s.local_port == port && s.foreign_port == 0).all(|s| s.uid == my_uid()))
+    }
+
+    pub fn peer_is_mine(peer: SocketAddr, server_port: u16) -> bool {
+        table().is_none_or(|sockets| sockets.iter().any(|s| s.local_port == peer.port() && s.foreign_port == server_port && s.uid == my_uid()))
+    }
+}
+
+/// Reading macOS's `net.inet.tcp.pcblist_n`: a header, then for each socket several records, each
+/// starting with its length and kind, each padded to 8 bytes; a shorter record ends the list.
+#[cfg(any(test, target_os = "macos"))]
+mod pcb {
+    /// `xgen_n`'s two fields, then `xinpcb_n`: a 64-bit handle, the foreign and local ports.
+    const PORTS_AT: usize = 16;
+    const XSO_SOCKET: u32 = 0x001;
+    const XSO_INPCB: u32 = 0x010;
+    /// `struct xinpgen`, the header and the end of the list.
+    const HEADER: usize = 24;
+    /// Where `xsocket_n` keeps its owner, as its alignment is packed or not.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code, reason = "macOS only, tested everywhere"))]
+    pub const UID_OFFSETS: [usize; 2] = [64, 68];
+
+    #[derive(Debug, PartialEq, Eq)]
+    pub struct Socket {
+        pub local_port: u16,
+        pub foreign_port: u16,
+        pub uid: u32,
+    }
+
+    fn u32_at(bytes: &[u8], at: usize) -> Option<u32> {
+        Some(u32::from_ne_bytes(bytes.get(at..at.checked_add(4)?)?.try_into().ok()?))
+    }
+
+    pub fn sockets(table: &[u8], uid_at: usize) -> Vec<Socket> {
+        let mut found = Vec::new();
+        let Some(header) = u32_at(table, 0) else { return found };
+        let (mut at, mut ports, mut owner) = ((header as usize).next_multiple_of(8), None, None);
+        while let Some(record) = table.get(at..) {
+            let (Some(len), Some(kind)) = (u32_at(record, 0).map(|l| l as usize), u32_at(record, 4)) else { break };
+            if len <= HEADER {
+                break;
+            }
+            match kind {
+                XSO_INPCB => {
+                    // In network byte order, the foreign port first.
+                    ports = record.get(PORTS_AT..PORTS_AT + 4).map(|p| (u16::from_be_bytes([p[2], p[3]]), u16::from_be_bytes([p[0], p[1]])));
+                }
+                XSO_SOCKET => owner = u32_at(record, uid_at),
+                _ => {}
+            }
+            if let (Some((local_port, foreign_port)), Some(uid)) = (ports, owner) {
+                found.push(Socket { local_port, foreign_port, uid });
+                (ports, owner) = (None, None);
+            }
+            at = at.saturating_add(len.next_multiple_of(8));
+        }
+        found
     }
 }
 
@@ -354,8 +445,38 @@ mod tests {
         let _client = std::net::TcpStream::connect(("127.0.0.1", server)).unwrap();
         let (_accepted, peer) = listener.accept().unwrap();
         assert!(peer_is_mine(peer, server), "{peer}");
-        #[cfg(any(windows, target_os = "linux"))]
         assert!(!peer_is_mine(SocketAddr::from(([127, 0, 0, 1], 1)), server), "no such connection");
+    }
+
+    /// One socket as macOS's table holds it: its two records around another kind of record, the
+    /// owner at `uid_at` of the socket record.
+    fn pcb_records(local: u16, foreign: u16, uid: u32, uid_at: usize) -> Vec<u8> {
+        let record = |kind: u32, len: usize, fill: &dyn Fn(&mut Vec<u8>)| {
+            let mut r = [(len as u32).to_ne_bytes(), kind.to_ne_bytes()].concat();
+            r.resize(len.next_multiple_of(8), 0);
+            fill(&mut r);
+            r
+        };
+        let inpcb = record(0x010, 100, &|r| {
+            r[16..18].copy_from_slice(&foreign.to_be_bytes());
+            r[18..20].copy_from_slice(&local.to_be_bytes());
+        });
+        let socket = record(0x001, 80, &|r| r[uid_at..uid_at + 4].copy_from_slice(&uid.to_ne_bytes()));
+        [inpcb, socket, record(0x002, 36, &|_| {})].concat()
+    }
+
+    #[test]
+    fn reads_macoss_table_of_sockets() {
+        let (me, other) = (501, 502);
+        let trailer = [24u32.to_ne_bytes(), 2u32.to_ne_bytes()].concat();
+        let mut header = vec![0u8; 24];
+        header[..4].copy_from_slice(&24u32.to_ne_bytes());
+        let table = [header, pcb_records(9614, 0, me, 64), pcb_records(50000, 9614, other, 64), trailer].concat();
+        let socket = |local_port, foreign_port, uid| pcb::Socket { local_port, foreign_port, uid };
+
+        assert_eq!(pcb::sockets(&table, 64), [socket(9614, 0, me), socket(50000, 9614, other)]);
+        assert_ne!(pcb::sockets(&table, 68), pcb::sockets(&table, 64), "another layout reads other owners: the listener check refuses it");
+        assert!(pcb::sockets(&table[..30], 64).is_empty(), "cut short: nothing made up");
     }
 
     /// The RPC endpoint mapper listens on 135 as NETWORK SERVICE on every Windows: not ours.

@@ -247,6 +247,7 @@ async fn download(
     match result {
         Ok(Outcome::Completed) if resume.bytes == 0 => Err(EngineError::Empty),
         Ok(Outcome::Completed) => {
+            file.sync_data().await?; // on disk before its resume point goes, like the segmented engine
             let _ = fs::remove_file(&state).await;
             progress.total.store(resume.bytes, Relaxed);
             Ok(Outcome::Completed)

@@ -210,6 +210,7 @@
  "Queues": "Colas",
  "Quit": "Salir",
  "RDM adapts the number of connections to the network and the server by itself: this setting is only a ceiling.": "RDM adapta por sí solo el número de conexiones a la red y al servidor: este ajuste es solo un tope.",
+ "RDM cannot open its window: {e}": "RDM no puede abrir su ventana: {e}",
  "RDM cannot save its files: {e}": "RDM no puede guardar sus archivos: {e}",
  "RDM cannot start: the local port 127.0.0.1:{port} is taken by a program that does not answer (a stuck RDM, or another session's?). Close it (Task Manager), then start RDM again.": "RDM no puede iniciarse: el puerto local 127.0.0.1:{port} está ocupado por un programa que no responde (¿un RDM bloqueado o el de otra sesión?). Ciérrelo (Administrador de tareas) y vuelva a iniciar RDM.",
  "RDM cannot start: {e}": "RDM no puede iniciarse: {e}",

@@ -7,8 +7,8 @@ use crate::{manager::Manager, trf};
 
 /// Opens a finished file with its default application.
 ///
-/// On Linux `xdg-open` is waited for, so it is reaped instead of lingering as a zombie process
-/// until RDM exits (the `opener` crate never waits for it).
+/// On Linux and macOS the opener (`xdg-open`, `open`) is waited for, so it is reaped instead of
+/// lingering as a zombie process until RDM exits (the `opener` crate never waits for it).
 pub(super) fn open_file(path: PathBuf, manager: &Arc<Manager>) {
     let manager = manager.clone();
     std::thread::spawn(move || {
@@ -26,10 +26,11 @@ fn open_with_default_app(path: &std::path::Path) -> std::io::Result<()> {
 #[cfg(not(windows))]
 fn open_with_default_app(path: &std::path::Path) -> std::io::Result<()> {
     use std::process::{Command, Stdio};
-    match Command::new("xdg-open").arg(path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+    let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    match Command::new(opener).arg(path).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
         Ok(mut child) => match child.wait()? {
             status if status.success() => Ok(()),
-            status => Err(std::io::Error::other(format!("xdg-open: {status}"))),
+            status => Err(std::io::Error::other(format!("{opener}: {status}"))),
         },
         Err(_) => opener::open(path).map_err(std::io::Error::other),
     }

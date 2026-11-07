@@ -25,7 +25,8 @@ pub(super) struct Recording {
     pub(super) id: DownloadId,
     pub(super) target: PathBuf,
     pub(super) parts: HashMap<(u32, Track), u64>,
-    pub(super) last_data: Instant,
+    /// When the tab was last heard from (data, or the player's position).
+    pub(super) last_heard: Instant,
     /// Each part's file, kept open while the recording runs: closing a growing file after every
     /// chunk made Windows' antivirus scan all of it again each time.
     pub(super) files: HashMap<(u32, Track), PartFile>,
@@ -40,7 +41,7 @@ const MAX_RECORDING_SOURCES: usize = 64;
 /// More than any real recording (12 hours of 4K): the page's scripts can see the recording's
 /// token, and must not be able to fill the disk through it.
 const MAX_RECORDING_BYTES: u64 = 64 << 30;
-/// A recording that receives nothing for this long is considered abandoned.
+/// A recording whose tab says nothing for this long is considered abandoned.
 const RECORDING_IDLE: Duration = Duration::from_secs(120);
 
 impl Recording {
@@ -74,7 +75,7 @@ impl Manager {
         lock(&self.entries).push(entry);
         drop(naming);
         let token = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
-        let recording = Recording { id, target, parts: HashMap::new(), last_data: Instant::now(), files: HashMap::new() };
+        let recording = Recording { id, target, parts: HashMap::new(), last_heard: Instant::now(), files: HashMap::new() };
         lock(&self.recordings).insert(token.clone(), recording);
         self.changed();
         token
@@ -96,7 +97,7 @@ impl Manager {
                 self.cancel_recording(token, Failure::RecordingTooLarge);
                 return Ok(false);
             }
-            r.last_data = Instant::now();
+            r.last_heard = Instant::now();
             *r.parts.entry((ms, track)).or_default() += data.len() as u64;
             (r.part(ms, track), r.id, r.files.get(&(ms, track)).cloned())
         };
@@ -126,9 +127,15 @@ impl Manager {
         Ok(true)
     }
 
-    /// Playback position (0..1): turns the bytes received so far into an estimated total.
+    /// Playback position (0..1): turns the bytes received so far into an estimated total. The tab
+    /// is alive, data or not: a player waiting for a click, an ad break or a slow network is no
+    /// reason to throw away what it recorded.
     pub fn record_progress(&self, token: &str, fraction: f64) -> bool {
-        let Some(id) = lock(&self.recordings).get(token).map(|r| r.id) else { return false };
+        let heard = lock(&self.recordings).get_mut(token).map(|r| {
+            r.last_heard = Instant::now();
+            r.id
+        });
+        let Some(id) = heard else { return false };
         self.view(|es| {
             if let Some(e) = es.iter().find(|e| e.download.id == id) {
                 let done = e.progress.downloaded.load(Relaxed);
@@ -205,7 +212,7 @@ impl Manager {
     pub(super) fn reap_idle_recordings(&self) {
         let idle: Vec<String> = lock(&self.recordings)
             .iter()
-            .filter(|(_, r)| r.last_data.elapsed() > RECORDING_IDLE)
+            .filter(|(_, r)| r.last_heard.elapsed() > RECORDING_IDLE)
             .map(|(t, _)| t.clone())
             .collect();
         for token in idle {

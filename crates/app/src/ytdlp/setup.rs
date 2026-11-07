@@ -22,7 +22,9 @@ const BGUTIL_SOURCE_URL: &str = "https://codeload.github.com/Brainicism/bgutil-y
 
 #[cfg(windows)]
 pub(super) const YTDLP_ASSET: &str = "yt-dlp.exe";
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub(super) const YTDLP_ASSET: &str = "yt-dlp_macos";
+#[cfg(all(unix, not(target_os = "macos")))]
 pub(super) const YTDLP_ASSET: &str = "yt-dlp_linux";
 /// yt-dlp's checksum list, and its detached signature.
 const YTDLP_SUMS: &str = "SHA2-256SUMS";
@@ -31,7 +33,10 @@ const YTDLP_SUMS: &str = "SHA2-256SUMS";
 const DENO_VERSION: &str = "2.9.7";
 #[cfg(windows)]
 const DENO_ASSET: (&str, &str) = ("deno-x86_64-pc-windows-msvc.zip", "a0c3101b4158d1dfb7d6a78a7bf0f3de80c96bb423c152beec8beb22786f2238");
-#[cfg(not(windows))]
+// shortcut: Apple Silicon only (what RDM ships for macOS), add the x86_64 archives if it ever builds for Intel Macs.
+#[cfg(target_os = "macos")]
+const DENO_ASSET: (&str, &str) = ("deno-aarch64-apple-darwin.zip", "5cd46d6268f6f78f5d88bdc7159d20bd44cdaa4b3303474839f87ec6fe7ae25c");
+#[cfg(all(unix, not(target_os = "macos")))]
 const DENO_ASSET: (&str, &str) = ("deno-x86_64-unknown-linux-gnu.zip", "c6527f24f4b16031d3ae4fa9f658d5f11534c8d84ce7dc8502420280919c3490");
 
 /// The native drawing library bgutil uses (through its `canvas` package), as its own release
@@ -39,7 +44,9 @@ const DENO_ASSET: (&str, &str) = ("deno-x86_64-unknown-linux-gnu.zip", "c6527f24
 const CANVAS_VERSION: &str = "3.2.3";
 #[cfg(windows)]
 const CANVAS_ASSET: (&str, &str) = ("canvas-v3.2.3-napi-v7-win32-x64.tar.gz", "ba953cc8c38303ab94cc83461c7561506a5a3af37d6c678de4a47914d2d0bb48");
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+const CANVAS_ASSET: (&str, &str) = ("canvas-v3.2.3-napi-v7-darwin-arm64.tar.gz", "38c296c9d81c05598db849fb8103543d6649fec7246c35197d9be8199c75116f");
+#[cfg(all(unix, not(target_os = "macos")))]
 const CANVAS_ASSET: (&str, &str) = ("canvas-v3.2.3-napi-v7-linux-x64.tar.gz", "886d1cc270d4caad1d1698ee97532e79c60e992e16fe5f37f2d3bb058f4292b0");
 
 const MAX_FILE: u64 = 400 << 20;
@@ -261,6 +268,7 @@ mod tests {
         let list = include_str!("../../testdata/yt-dlp-2026.08.19-SHA2-256SUMS");
         assert_eq!(sum_of(list, "yt-dlp.exe").as_deref(), Some("66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a"));
         assert_eq!(sum_of(list, "yt-dlp_linux").as_deref(), Some("58162f9bfdc27458ea47bfcb311cf47028f17d8154a8bf7d689861d46399230a"));
+        assert_eq!(sum_of(list, "yt-dlp_macos").as_deref(), Some("0f192b7ec147ab6288885d6351d9ab67367640029b4377576ef46dd79cf7b202"));
         assert_eq!(sum_of(list, "yt-dlp"), Some(sum_of(list, "yt-dlp").unwrap()), "exact names only");
         assert!(sum_of(list, "yt-dlp_linux.zip").is_some_and(|s| Some(s) != sum_of(list, "yt-dlp_linux")));
         assert_eq!(sum_of(list, "missing.exe"), None);

@@ -90,8 +90,8 @@ pub fn save_json(name: &str, value: &impl Serialize) -> io::Result<()> {
     written
 }
 
-/// RDM's settings folder, private to the user on Linux (0700, like `~/.ssh`): the download list
-/// holds links with their access tokens. Windows: the profile folder is private already.
+/// RDM's settings folder, private to the user on Linux and macOS (0700, like `~/.ssh`): the download
+/// list holds links with their access tokens. Windows: the profile folder is private already.
 pub fn create_private_dir(dir: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {

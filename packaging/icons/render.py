@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Renders every icon of RDM from the two SVG masters in crates/app/assets/icon/.
+"""Renders every icon of RDM (Windows, Linux, macOS, the extension) from the two SVG masters in
+crates/app/assets/icon/.
 
     python3 packaging/icons/render.py      (needs rsvg-convert and Pillow:
                                             sudo apt install librsvg2-bin python3-pil)
@@ -57,6 +58,17 @@ def save_ico(sizes, path: Path) -> None:
     path.write_bytes(bytes(out))
 
 
+def save_icns(path: Path) -> None:
+    """Apple's icon container: one PNG per entry, each rendered from its own master."""
+    entries = b""
+    for kind, size in ((b"ic11", 32), (b"ic12", 64), (b"ic07", 128), (b"ic13", 256), (b"ic08", 256), (b"ic14", 512), (b"ic09", 512), (b"ic10", 1024)):
+        buf = io.BytesIO()
+        render(size).save(buf, format="PNG", optimize=True)
+        entries += kind + struct.pack(">I", 8 + buf.tell()) + buf.getvalue()
+    path.write_bytes(b"icns" + struct.pack(">I", 8 + len(entries)) + entries)
+
+
+save_icns(ROOT / "packaging/macos/rdm.icns")
 save_ico([16, 20, 24, 32, 40, 48, 64, 128, 256], ASSETS / "rdm.ico")
 save_png(256, ASSETS / "rdm.png")
 save_rgba(64, ASSETS / "icon64.rgba")

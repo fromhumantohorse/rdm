@@ -42,11 +42,26 @@ fn is_recording_part(name: &str, file: &str) -> bool {
 }
 
 /// Mark-of-the-Web, as browsers do: SmartScreen / Office Protected View then warn before running
-/// downloaded executables or macros. Zone only — the source URL is not recorded (privacy).
+/// downloaded executables or macros. Zone only — the source URL is not recorded (privacy). macOS's
+/// counterpart is the quarantine attribute: Gatekeeper checks the file before it first runs.
 pub(super) fn mark_from_internet(path: &Path) {
     if cfg!(windows) {
         let _ = fs::write(with_suffix(path, ":Zone.Identifier"), "[ZoneTransfer]\r\nZoneId=3\r\n");
     }
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else { return };
+        // flags (downloaded, not approved yet);time;program;event, as browsers write it.
+        let value = format!("0081;{:08x};RDM;{}", unix_now(), uuid::Uuid::new_v4().as_hyphenated().to_string().to_uppercase());
+        // SAFETY: NUL-terminated names and a value of the given length, all outliving the call.
+        unsafe { libc::setxattr(path.as_ptr(), c"com.apple.quarantine".as_ptr(), value.as_ptr().cast(), value.len(), 0, 0) };
+    }
+}
+
+/// Whether two paths name one file: Windows' and macOS's file systems ignore case by default.
+fn same_file(a: &Path, b: &Path) -> bool {
+    if cfg!(any(windows, target_os = "macos")) { a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase() } else { a == b }
 }
 
 /// What a download of the list writes, for choosing new names without holding the list's lock
@@ -80,7 +95,7 @@ pub(super) fn target_for(settings: &Settings, name: &str, taken: &[Planned], exc
             let link = fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink());
             // Another download of the list still writing (or to write) that file keeps it: two
             // transfers into one file would corrupt both. A completed one gives it up.
-            let planned = taken.iter().any(|e| e.target == path && Some(e.id) != except && !e.completed);
+            let planned = taken.iter().any(|e| same_file(&e.target, &path) && Some(e.id) != except && !e.completed);
             if link || planned || path.is_dir() {
                 return Some(unique_path(&dir, name, taken, except));
             }
@@ -106,7 +121,7 @@ pub(super) fn unique_path(dir: &Path, name: &str, taken: &[Planned], except: Opt
         .find(|p| {
             !p.exists()
                 && !with_suffix(p, engine::STATE_SUFFIX).exists()
-                && !taken.iter().any(|e| &e.target == p && Some(e.id) != except)
+                && !taken.iter().any(|e| same_file(&e.target, p) && Some(e.id) != except)
         })
         .expect("unbounded range always yields a free name")
 }
@@ -126,13 +141,26 @@ mod tests {
     #[test]
     fn only_recording_chunks_count_as_leftovers() {
         let target = PathBuf::from("dl").join("Clip.mp4");
-        let recording = Recording { id: DownloadId::new(), target, parts: HashMap::new(), last_data: Instant::now(), files: HashMap::new() };
+        let recording = Recording { id: DownloadId::new(), target, parts: HashMap::new(), last_heard: Instant::now(), files: HashMap::new() };
         let part = recording.part(3, Track::Audio);
         assert!(is_recording_part("Clip.mp4", &part.file_name().unwrap().to_string_lossy()));
         assert!(is_recording_part("Clip.mp4", "Clip.mp4.rec12.video"));
         for other in ["Clip.mp4.recipe.txt", "Clip.mp4.rec.video", "Clip.mp4.rec1.video.bak", "Clip.mp4.rec1x.audio", "Clip.mp4"] {
             assert!(!is_recording_part("Clip.mp4", other), "{other}");
         }
+    }
+
+    /// Regression: two links differing by case in their names (`A.zip`, `a.zip`) were both planned
+    /// under one file on Windows and macOS: two transfers corrupting each other.
+    #[test]
+    fn a_name_differing_by_case_is_taken_where_the_file_system_ignores_case() {
+        let dir = std::env::temp_dir().join(format!("rdm-case-{}", std::process::id()));
+        let planned = [Planned { id: DownloadId::new(), target: dir.join("Report.PDF"), completed: false }];
+
+        let chosen = unique_path(&dir, "report.pdf", &planned, None);
+
+        let expected = if cfg!(any(windows, target_os = "macos")) { "report (1).pdf" } else { "report.pdf" };
+        assert_eq!(chosen, dir.join(expected));
     }
 
     /// Regression: with "overwrite", removing a download that failed before writing anything

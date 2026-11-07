@@ -99,7 +99,7 @@ impl App<'_> {
         });
         if let Some(text) = copied {
             ctx.copy_text(text);
-            self.toasts.info(icon::COPY, tr!("Chemin copié : collez-le avec Ctrl+V", "Path copied: paste it with Ctrl+V"));
+            self.toasts.info(icon::COPY, &widgets::shortcut(tr!("Chemin copié : collez-le avec Ctrl+V", "Path copied: paste it with Ctrl+V")));
         }
         if add {
             self.add_browser(&mut state);
@@ -117,6 +117,8 @@ impl App<'_> {
         let mut dialog = rfd::FileDialog::new().set_title(tr!("Choisir le programme du navigateur", "Choose the browser's program"));
         if cfg!(windows) {
             dialog = dialog.add_filter(tr!("Programmes", "Programs"), &["exe"]);
+        } else if cfg!(target_os = "macos") {
+            dialog = dialog.add_filter(tr!("Programmes", "Programs"), &["app"]);
         }
         let Some(exe) = dialog.pick_file() else { return };
         match self.manager.add_browser(exe.clone()) {

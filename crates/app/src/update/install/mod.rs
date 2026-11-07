@@ -40,6 +40,7 @@ pub async fn install_linux(package: Verified) -> Result<(), UpdateError> {
 }
 
 /// Whether the file at `path` is still the package that was verified (its SHA-256 `expected`).
+#[cfg_attr(target_os = "macos", allow(dead_code, reason = "RDM does not update itself on macOS"))]
 fn unchanged(path: &Path, expected: &str) -> bool {
     crate::manager::checksum::digest(path, domain::HashAlgo::Sha256).is_ok_and(|digest| digest.eq_ignore_ascii_case(expected))
 }

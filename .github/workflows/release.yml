@@ -21,9 +21,16 @@ jobs:
         include:
           - os: windows-latest
             artifact: rdm-windows
-          - os: ubuntu-latest
+          # The oldest supported Ubuntu: the binary needs at least the glibc it was built against,
+          # and runs on every distribution newer than this one.
+          - os: ubuntu-22.04
             artifact: rdm-linux
+          # Apple Silicon: the binary is native on the M1 and every later chip (no Rosetta).
+          - os: macos-latest
+            artifact: rdm-macos
     runs-on: ${{ matrix.os }}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0" # the first macOS on Apple Silicon: see packaging/macos/Info.plist
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -81,12 +88,18 @@ jobs:
           Expand-Archive $zip "$env:LOCALAPPDATA\Programs\wix3"
           powershell -ExecutionPolicy Bypass -File packaging/windows/build-msi.ps1 -NoBuild
 
+      - name: macOS application and disk image
+        if: runner.os == 'macOS'
+        run: sh packaging/macos/build-app.sh
+
       - name: Stage
         shell: bash
         run: |
           mkdir dist
           if [ "$RUNNER_OS" = Windows ]; then
             cp RDM-*-x64-setup.msi target/release/rdm.exe packaging/windows/install.ps1 dist/
+          elif [ "$RUNNER_OS" = macOS ]; then
+            cp RDM-*-macos-arm64.dmg dist/
           else
             mkdir rdm-linux-x64
             cp target/release/rdm crates/app/assets/rdm.png rdm-linux-x64/ && cp -r packaging/linux/. rdm-linux-x64/
@@ -161,14 +174,14 @@ jobs:
       - name: Collect the packages (the signed Firefox package replaces the unsigned one)
         run: |
           mkdir dist
-          cp artifacts/rdm-windows/* artifacts/rdm-linux/* dist/
+          cp artifacts/rdm-windows/* artifacts/rdm-linux/* artifacts/rdm-macos/* dist/
           if [ -f artifacts/rdm-firefox-signed/rdm-firefox.xpi ]; then
             cp artifacts/rdm-firefox-signed/rdm-firefox.xpi dist/rdm-firefox.xpi
           fi
 
       - name: Every package is there
         run: |
-          for pattern in 'dist/*.msi' 'dist/*.deb' 'dist/*.rpm' dist/rdm-linux-x64.tar.gz dist/rdm-chromium.zip dist/rdm-firefox.xpi; do
+          for pattern in 'dist/*.msi' 'dist/*.deb' 'dist/*.rpm' 'dist/*.dmg' dist/rdm-linux-x64.tar.gz dist/rdm-chromium.zip dist/rdm-firefox.xpi; do
             compgen -G "$pattern" >/dev/null || { echo "::error::missing $pattern"; exit 1; }
           done
 
@@ -206,4 +219,4 @@ jobs:
               gh release create "$tag" --verify-tag --title "RDM ${tag#v}" --generate-notes
             fi
           fi
-          gh release upload "$tag" --clobber dist/*.msi dist/*.deb dist/*.rpm dist/*.tar.gz dist/*.xpi dist/*.zip dist/*.sig dist/updates.json
+          gh release upload "$tag" --clobber dist/*.msi dist/*.deb dist/*.rpm dist/*.dmg dist/*.tar.gz dist/*.xpi dist/*.zip dist/*.sig dist/updates.json

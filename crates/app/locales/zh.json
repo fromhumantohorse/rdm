@@ -210,6 +210,7 @@
  "Queues": "队列",
  "Quit": "退出",
  "RDM adapts the number of connections to the network and the server by itself: this setting is only a ceiling.": "RDM 会根据网络和服务器自动调整连接数：此设置只是上限。",
+ "RDM cannot open its window: {e}": "RDM 无法打开窗口：{e}",
  "RDM cannot save its files: {e}": "RDM 无法保存其文件：{e}",
  "RDM cannot start: the local port 127.0.0.1:{port} is taken by a program that does not answer (a stuck RDM, or another session's?). Close it (Task Manager), then start RDM again.": "RDM 无法启动：本地端口 127.0.0.1:{port} 被一个无响应的程序占用（可能是卡住的 RDM，或另一个会话中的 RDM）。请将其关闭（任务管理器），然后重新启动 RDM。",
  "RDM cannot start: {e}": "RDM 无法启动：{e}",

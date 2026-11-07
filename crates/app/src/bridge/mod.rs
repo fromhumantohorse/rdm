@@ -11,7 +11,7 @@
 //! - no `Origin` (a local program — the native connector, `rdm --quit`, a second launch): only
 //!   with the token RDM writes in the user's private files (see `local`); without it, only
 //!   `GET /ping` and `GET /config` naming their browser (`x-rdm-browser`: the Firefox extension's
-//!   GETs carry no `Origin`; a web page cannot add that header, so it cannot tell RDM is here);
+//!   GETs carry no `Origin`; a web page cannot add that header, so it reads nothing from RDM);
 //! - `Host`: must be the loopback address, which defeats DNS rebinding;
 //! - JSON bodies (force a CORS preflight we never answer), 64 KiB cap, http(s) URLs only.
 
@@ -69,8 +69,9 @@ pub async fn serve(manager: Arc<Manager>, listener: TcpListener) {
         .route("/record/{token}/finish", post(recording::finish))
         .route("/record/{token}/cancel", post(recording::cancel))
         .layer(DefaultBodyLimit::max(MAX_BODY))
-        // Media chunks from the browser's player: the only route with large bodies.
-        .route("/record/{token}/append", post(recording::append).layer(DefaultBodyLimit::max(MAX_CHUNK)))
+        // Media chunks from the browser's player: the only route with large bodies (`MAX_CHUNK`, read
+        // once the caller is known).
+        .route("/record/{token}/append", post(recording::append))
         .with_state(manager);
     let _ = axum::serve(OwnAccount(listener), app).await;
 }

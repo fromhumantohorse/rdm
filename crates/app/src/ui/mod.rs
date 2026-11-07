@@ -80,7 +80,15 @@ fn self_paced() -> bool {
 pub fn run(manager: Arc<Manager>, minimized: bool) -> eframe::Result {
     // The process's one event loop (winit cannot build a second): windows come and go on it. Built
     // first: on Windows this makes the process DPI-aware, which the tray icon's menu needs to be sharp.
-    let mut event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut builder = EventLoop::<UserEvent>::with_user_event();
+    // Started at login: no Dock icon, and the focus stays where it is, until a window opens.
+    #[cfg(target_os = "macos")]
+    if minimized {
+        use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
+        builder.with_activation_policy(ActivationPolicy::Accessory).with_activate_ignoring_other_apps(false);
+    }
+    let mut event_loop = builder.build()?;
     let shell = Arc::new(Shell::default());
     shell.set_waker(event_loop.create_proxy());
     manager.on_change({
@@ -100,7 +108,16 @@ pub fn run(manager: Arc<Manager>, minimized: bool) -> eframe::Result {
             }
         }
     });
+    #[cfg(target_os = "macos")]
+    save_when_the_system_quits(&manager);
+    #[cfg(not(target_os = "macos"))]
     let mut tray = create_tray(&shell, &manager);
+    #[cfg(target_os = "macos")]
+    let mut tray = {
+        let mut first = FirstTurn { shell: &shell, manager: &manager, tray: None };
+        event_loop.run_app_on_demand(&mut first)?;
+        first.tray
+    };
 
     // Survives the window: what the user typed and chose, and where the window was.
     let mut memo = Memo::default();
@@ -110,6 +127,8 @@ pub fn run(manager: Arc<Manager>, minimized: bool) -> eframe::Result {
     let mut start_minimized = minimized && tray.is_none();
     let result = loop {
         if windowless {
+            #[cfg(target_os = "macos")]
+            dock_icon(false);
             let mut idle = Idle { shell: &shell, manager: &manager, tray: tray.as_mut(), wake: None };
             let ran = event_loop.run_app_on_demand(&mut idle);
             match (ran, idle.wake) {
@@ -118,6 +137,8 @@ pub fn run(manager: Arc<Manager>, minimized: bool) -> eframe::Result {
                 (Ok(()), _) => break Ok(()),
             }
         }
+        #[cfg(target_os = "macos")]
+        dock_icon(true);
         let result = open_window(&mut event_loop, &manager, &shell, tray.as_mut(), &mut memo, start_minimized);
         start_minimized = false;
         let keep_running = tray.is_some() && !shell.quitting() && manager.with_settings(|s| s.close_to_tray);
@@ -163,6 +184,65 @@ impl ApplicationHandler<UserEvent> for Idle<'_> {
     fn resumed(&mut self, _: &ActiveEventLoop) {}
 
     fn window_event(&mut self, _: &ActiveEventLoop, _: WindowId, _: WindowEvent) {}
+}
+
+/// macOS: the loop's first turn creates the tray icon. Before it runs, an icon would not show over
+/// full-screen applications (tray-icon's own rule), so the loop starts just for that.
+#[cfg(target_os = "macos")]
+struct FirstTurn<'a> {
+    shell: &'a Arc<Shell>,
+    manager: &'a Arc<Manager>,
+    tray: Option<Tray>,
+}
+
+#[cfg(target_os = "macos")]
+impl ApplicationHandler<UserEvent> for FirstTurn<'_> {
+    fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
+        if cause == StartCause::Init {
+            self.tray = create_tray(self.shell, self.manager);
+            event_loop.exit();
+        }
+    }
+
+    fn resumed(&mut self, _: &ActiveEventLoop) {}
+
+    fn window_event(&mut self, _: &ActiveEventLoop, _: WindowId, _: WindowEvent) {}
+}
+
+/// macOS: an application is in the Dock (and the app switcher) while it has a window; in the menu bar
+/// only without one: a Dock icon winit gives no way to answer a click on would do nothing.
+#[cfg(target_os = "macos")]
+fn dock_icon(shown: bool) {
+    use objc2::{class, msg_send, runtime::AnyObject};
+    const REGULAR: isize = 0; // NSApplicationActivationPolicyRegular
+    const ACCESSORY: isize = 1;
+    // SAFETY: AppKit's documented calls, on the main thread (where `ui::run` runs), between two
+    // turns of the event loop.
+    unsafe {
+        let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+        let _: bool = msg_send![app, setActivationPolicy: if shown { REGULAR } else { ACCESSORY }];
+        if shown {
+            let _: () = msg_send![app, activateIgnoringOtherApps: true];
+        }
+    }
+}
+
+/// macOS: "Quit" in the Dock or the menu, ⌘Q and logging out end the process from inside the event
+/// loop: `run` never gets to its own saving. The same saving, as the process ends (nothing happens if
+/// it has been done).
+#[cfg(target_os = "macos")]
+fn save_when_the_system_quits(manager: &Arc<Manager>) {
+    static MANAGER: std::sync::OnceLock<std::sync::Weak<Manager>> = std::sync::OnceLock::new();
+    extern "C" fn at_exit() {
+        if let Some(manager) = MANAGER.get().and_then(std::sync::Weak::upgrade) {
+            manager.shutdown();
+        }
+    }
+    let _ = MANAGER.set(Arc::downgrade(manager));
+    // SAFETY: registers a plain function that lives as long as the process.
+    unsafe {
+        libc::atexit(at_exit);
+    }
 }
 
 fn create_tray(shell: &Arc<Shell>, manager: &Arc<Manager>) -> Option<Tray> {

@@ -59,7 +59,8 @@ impl App<'_> {
                         if icon_button(ui, glyph, tip, None).clicked() {
                             self.set_theme(&ctx, next);
                         }
-                        field(ui, Id::new(SEARCH_ID), &mut self.memo.search, tr!("Rechercher  (Ctrl+F)", "Search  (Ctrl+F)"), icon::MAGNIFYING_GLASS, SEARCH_WIDTH);
+                        let hint = widgets::shortcut(tr!("Rechercher  (Ctrl+F)", "Search  (Ctrl+F)"));
+                        field(ui, Id::new(SEARCH_ID), &mut self.memo.search, &hint, icon::MAGNIFYING_GLASS, SEARCH_WIDTH);
                     });
                 });
             });

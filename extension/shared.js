@@ -9,8 +9,8 @@ const extOf = (name = "") => {
   return dot >= 0 ? file.slice(dot + 1).toLowerCase() : "";
 };
 
-// .r00 .r01 … and .001 .002 …: parts of split archives.
-const isSplitArchive = (ext) => /^r\d{1,3}$/.test(ext) || /^\d{3}$/.test(ext);
+// .r00 .r01 …, .z01 .z02 … and .001 .002 …: parts of split archives.
+const isSplitArchive = (ext) => /^[rz]\d{1,3}$/.test(ext) || /^\d{3}$/.test(ext);
 
 export const isCapturable = (list, name) => {
   const ext = extOf(name);
@@ -18,7 +18,7 @@ export const isCapturable = (list, name) => {
   if (isSplitArchive(ext)) return true;
   return list
     .split(/[\s,;]+/)
-    .some((e) => e.replace(/^\./, "").toLowerCase() === ext);
+    .some((e) => e.replace(/^\.+/, "").toLowerCase() === ext);
 };
 
 const MEDIA_EXTENSIONS = new Set(

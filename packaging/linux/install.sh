@@ -271,14 +271,16 @@ EOF
     if [ ! -s "$settings" ]; then
         printf '{"autostart":true}\n' >"$settings"
     elif command -v python3 >/dev/null; then
-        python3 - "$settings" <<'EOF'
-import json, sys
+        # A damaged file must not stop the installation, nor be replaced by half a file.
+        python3 - "$settings" <<'EOF' || warn "could not update $settings: turn on \"Start with the system\" in RDM's settings"
+import json, os, sys
 path = sys.argv[1]
 with open(path, encoding="utf-8") as f:
     settings = json.load(f)
 settings["autostart"] = True
-with open(path, "w", encoding="utf-8") as f:
+with open(path + ".tmp", "w", encoding="utf-8") as f:
     json.dump(settings, f, ensure_ascii=False)
+os.replace(path + ".tmp", path)
 EOF
     fi
     say "RDM will start at login (in the notification area)"

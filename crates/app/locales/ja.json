@@ -210,6 +210,7 @@
  "Queues": "キュー",
  "Quit": "終了",
  "RDM adapts the number of connections to the network and the server by itself: this setting is only a ceiling.": "RDM はネットワークとサーバーに合わせて接続数を自動調整します。この設定は上限にすぎません。",
+ "RDM cannot open its window: {e}": "RDM のウィンドウを開けません: {e}",
  "RDM cannot save its files: {e}": "RDM のファイルを保存できません：{e}",
  "RDM cannot start: the local port 127.0.0.1:{port} is taken by a program that does not answer (a stuck RDM, or another session's?). Close it (Task Manager), then start RDM again.": "RDM を起動できません。ローカルポート 127.0.0.1:{port} が応答しないプログラムに使われています（固まった RDM、または別のセッションの RDM でしょうか）。それを終了して（タスクマネージャー）、RDM をもう一度起動してください。",
  "RDM cannot start: {e}": "RDM を起動できません：{e}",

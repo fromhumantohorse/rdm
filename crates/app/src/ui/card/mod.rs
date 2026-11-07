@@ -238,7 +238,7 @@ fn empty_state(ui: &mut Ui, p: &Palette, nothing_at_all: bool, searching: bool) 
             ui.add_space(12.0);
             ui.allocate_ui_with_layout(vec2(330.0, 28.0), Layout::left_to_right(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
-                kbd(ui, "Ctrl");
+                kbd(ui, &widgets::shortcut("Ctrl"));
                 ui.label(RichText::new("+").color(p.faint));
                 kbd(ui, "V");
                 ui.label(RichText::new(tr!("n'importe où colle et télécharge", "anywhere pastes and downloads")).font(theme::regular(13.0)).color(p.muted));

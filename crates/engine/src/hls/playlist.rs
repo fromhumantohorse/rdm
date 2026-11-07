@@ -122,7 +122,9 @@ fn parse_media(base: &Url, text: &str) -> Result<Vec<Part>, EngineError> {
                 }
                 None => None,
             };
-            parts.push(Part { url: join(uri)?, key: None, seq, range });
+            // After a key, the section is encrypted with it, and RFC 8216 then requires its IV:
+            // written as is, it would make a "complete" file no player can read.
+            parts.push(Part { url: join(uri)?, key: key.clone().filter(|k| k.iv.is_some()), seq, range });
         } else if !line.is_empty() && !line.starts_with('#') {
             let url = join(line)?;
             let range = match pending_range.take() {
@@ -250,6 +252,20 @@ mod tests {
         assert_eq!(parts[1].key.as_ref().unwrap().iv.unwrap()[15], 10);
         assert_eq!((parts[1].seq, parts[2].seq), (7, 8));
         assert!(parts[2].key.is_none());
+    }
+
+    #[test]
+    fn an_initialization_section_after_a_key_is_decrypted_with_it() {
+        let parts = |text: &str| match parse(&base(), text) {
+            Ok(Playlist::Media { parts, .. }) => parts,
+            _ => panic!("expected media"),
+        };
+        let with_iv = "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"k.bin\",IV=0x0A\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:4,\na.m4s\n";
+        let without_iv = "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"k.bin\"\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:4,\na.m4s\n";
+
+        assert_eq!(parts(with_iv)[0].key.as_ref().unwrap().iv.unwrap()[15], 10);
+        assert!(parts(without_iv)[0].key.is_none(), "no IV: RFC 8216 says it cannot be encrypted");
+        assert!(parts(without_iv)[1].key.is_some(), "its segments are");
     }
 
     #[test]

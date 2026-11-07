@@ -210,6 +210,7 @@
  "Queues": "Wachtrijen",
  "Quit": "Afsluiten",
  "RDM adapts the number of connections to the network and the server by itself: this setting is only a ceiling.": "RDM past het aantal verbindingen zelf aan het netwerk en de server aan: deze instelling is slechts een plafond.",
+ "RDM cannot open its window: {e}": "RDM kan zijn venster niet openen: {e}",
  "RDM cannot save its files: {e}": "RDM kan zijn bestanden niet opslaan: {e}",
  "RDM cannot start: the local port 127.0.0.1:{port} is taken by a program that does not answer (a stuck RDM, or another session's?). Close it (Task Manager), then start RDM again.": "RDM kan niet starten: de lokale poort 127.0.0.1:{port} wordt bezet door een programma dat niet reageert (een vastgelopen RDM of die van een andere sessie?). Sluit het af (Taakbeheer) en start RDM opnieuw.",
  "RDM cannot start: {e}": "RDM kan niet starten: {e}",

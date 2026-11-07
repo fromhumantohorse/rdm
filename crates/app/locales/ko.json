@@ -210,6 +210,7 @@
  "Queues": "대기열",
  "Quit": "종료",
  "RDM adapts the number of connections to the network and the server by itself: this setting is only a ceiling.": "RDM은 네트워크와 서버에 맞춰 연결 수를 스스로 조정합니다. 이 설정은 상한일 뿐입니다.",
+ "RDM cannot open its window: {e}": "RDM 창을 열 수 없습니다: {e}",
  "RDM cannot save its files: {e}": "RDM 파일을 저장할 수 없습니다: {e}",
  "RDM cannot start: the local port 127.0.0.1:{port} is taken by a program that does not answer (a stuck RDM, or another session's?). Close it (Task Manager), then start RDM again.": "RDM을 시작할 수 없습니다: 로컬 포트 127.0.0.1:{port}이(가) 응답하지 않는 프로그램에서 사용 중입니다(멈춘 RDM이거나 다른 세션의 RDM일 수 있습니다). 해당 프로그램을 종료(작업 관리자)한 뒤 RDM을 다시 시작하세요.",
  "RDM cannot start: {e}": "RDM을 시작할 수 없습니다: {e}",

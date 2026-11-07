@@ -134,7 +134,7 @@
       return;
     }
     if (isAd()) {
-      post({ type: "progress", ad: true }); // not recorded; the banner says so
+      post({ type: "progress", ad: true, fraction: 0 }); // not recorded, the banner says so; RDM knows the tab lives
       return;
     }
     if (!configured) {

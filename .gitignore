@@ -2,10 +2,13 @@
 *.rdm
 
 /*.msi
+/*.dmg
 /*.xpi
 /*.zip
 
 /*.wixpdb
+
+/dist/
 
 node_modules/
 

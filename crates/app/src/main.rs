@@ -98,6 +98,11 @@ fn main() -> eframe::Result {
     #[cfg(unix)]
     rt.spawn(quit_on_signal(manager.clone()));
     let result = ui::run(manager.clone(), minimized); // returns once the manager has shut down
+    // No graphics driver up to it (a virtual machine, a remote session): said, or nothing would be:
+    // started from a menu, RDM has no console to write it in.
+    if let Err(e) = &result {
+        notify::fatal(&trf!("RDM ne peut pas ouvrir sa fenêtre : {e}", "RDM cannot open its window: {e}", e = e));
+    }
     let restart = manager.restart_requested();
     drop(manager);
     rt.shutdown_timeout(RUNTIME_GRACE); // frees the bridge port the new RDM needs

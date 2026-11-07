@@ -209,6 +209,9 @@ pub(crate) async fn run(
     ctx.progress.set_pieces(Vec::new());
     let done = ctx.slots.all_done();
     if done && failure.is_none() {
+        // On disk before its resume point goes: a power cut must not leave a file "complete" with
+        // holes in it, and nothing saying so.
+        fs::OpenOptions::new().write(true).open(&job.target).await?.sync_data().await?;
         let _ = fs::remove_file(&state).await;
         ctx.progress.downloaded.store(ctx.progress.total.load(Relaxed), Relaxed);
         return Ok(Outcome::Completed);

@@ -96,27 +96,48 @@ mod imp {
 
     use super::{HOST, manifest, write_if_changed};
 
-    /// Each browser's per-user host folder, under the folder that shows the browser is used.
+    /// Each browser's per-user folder (showing the browser is used) and host folder, in the home.
+    #[cfg(not(target_os = "macos"))]
     const CHROMIUM_DIRS: [(&str, &str); 7] = [
-        (".config/google-chrome", "NativeMessagingHosts"),
-        (".config/chromium", "NativeMessagingHosts"),
-        (".config/BraveSoftware/Brave-Browser", "NativeMessagingHosts"),
-        (".config/microsoft-edge", "NativeMessagingHosts"),
-        (".config/vivaldi", "NativeMessagingHosts"),
-        (".config/opera", "NativeMessagingHosts"),
-        (".config/google-chrome-beta", "NativeMessagingHosts"),
+        (".config/google-chrome", ".config/google-chrome/NativeMessagingHosts"),
+        (".config/chromium", ".config/chromium/NativeMessagingHosts"),
+        (".config/BraveSoftware/Brave-Browser", ".config/BraveSoftware/Brave-Browser/NativeMessagingHosts"),
+        (".config/microsoft-edge", ".config/microsoft-edge/NativeMessagingHosts"),
+        (".config/vivaldi", ".config/vivaldi/NativeMessagingHosts"),
+        (".config/opera", ".config/opera/NativeMessagingHosts"),
+        (".config/google-chrome-beta", ".config/google-chrome-beta/NativeMessagingHosts"),
     ];
-    const FIREFOX_DIRS: [(&str, &str); 3] =
-        [(".mozilla", "native-messaging-hosts"), (".waterfox", "native-messaging-hosts"), (".librewolf", "native-messaging-hosts")];
+    #[cfg(not(target_os = "macos"))]
+    const FIREFOX_DIRS: [(&str, &str); 3] = [
+        (".mozilla", ".mozilla/native-messaging-hosts"),
+        (".waterfox", ".waterfox/native-messaging-hosts"),
+        (".librewolf", ".librewolf/native-messaging-hosts"),
+    ];
+    #[cfg(target_os = "macos")]
+    const CHROMIUM_DIRS: [(&str, &str); 7] = [
+        ("Library/Application Support/Google/Chrome", "Library/Application Support/Google/Chrome/NativeMessagingHosts"),
+        ("Library/Application Support/Google/Chrome Beta", "Library/Application Support/Google/Chrome Beta/NativeMessagingHosts"),
+        ("Library/Application Support/Chromium", "Library/Application Support/Chromium/NativeMessagingHosts"),
+        ("Library/Application Support/BraveSoftware/Brave-Browser", "Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts"),
+        ("Library/Application Support/Microsoft Edge", "Library/Application Support/Microsoft Edge/NativeMessagingHosts"),
+        ("Library/Application Support/Vivaldi", "Library/Application Support/Vivaldi/NativeMessagingHosts"),
+        ("Library/Application Support/com.operasoftware.Opera", "Library/Application Support/com.operasoftware.Opera/NativeMessagingHosts"),
+    ];
+    // Firefox reads the hosts of a folder named after its vendor, not of its own profile folder.
+    #[cfg(target_os = "macos")]
+    const FIREFOX_DIRS: [(&str, &str); 3] = [
+        ("Library/Application Support/Firefox", "Library/Application Support/Mozilla/NativeMessagingHosts"),
+        ("Library/Application Support/Waterfox", "Library/Application Support/Waterfox/NativeMessagingHosts"),
+        ("Library/Application Support/LibreWolf", "Library/Application Support/LibreWolf/NativeMessagingHosts"),
+    ];
 
     pub fn register(exe: &Path) -> io::Result<()> {
         let Some(home) = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf()) else { return Ok(()) };
         let mut hosts: Vec<(PathBuf, bool)> = Vec::new();
         for (dirs, firefox) in [(&CHROMIUM_DIRS[..], false), (&FIREFOX_DIRS[..], true)] {
             for (browser, dir) in dirs {
-                let browser = home.join(browser);
-                if browser.is_dir() {
-                    hosts.push((browser.join(dir), firefox));
+                if home.join(browser).is_dir() {
+                    hosts.push((home.join(dir), firefox));
                 }
             }
         }
@@ -135,22 +156,30 @@ mod imp {
     }
 
     /// Where the browsers of the home folder look for connectors: a Chromium-based browser keeps
-    /// its profiles in `~/.config/<name>` (or one level deeper, `BraveSoftware/Brave-Browser`)
-    /// with a `Local State` file, and reads `NativeMessagingHosts` there; a Firefox-based one
-    /// keeps a `profiles.ini` in `~/.<name>` (or one level deeper, `.mozilla/firefox`) and reads
-    /// `~/.<name>/native-messaging-hosts`.
+    /// its profiles in `~/.config/<name>` — `~/Library/Application Support/<name>` on macOS — (or
+    /// one level deeper, `BraveSoftware/Brave-Browser`) with a `Local State` file, and reads
+    /// `NativeMessagingHosts` there; a Firefox-based one keeps a `profiles.ini` in `~/.<name>` (or
+    /// one level deeper, `.mozilla/firefox`) and reads `~/.<name>/native-messaging-hosts` — on
+    /// macOS, `NativeMessagingHosts` next to its `profiles.ini`.
     fn discovered(home: &Path) -> Vec<(PathBuf, bool)> {
         let subdirs = |dir: &Path| -> Vec<PathBuf> {
             std::fs::read_dir(dir).map(|e| e.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect()).unwrap_or_default()
         };
+        let config = if cfg!(target_os = "macos") { "Library/Application Support" } else { ".config" };
         let mut found = Vec::new();
-        for dir in subdirs(&home.join(".config")) {
+        for dir in subdirs(&home.join(config)) {
             for profile in std::iter::once(dir.clone()).chain(subdirs(&dir)) {
                 // Electron applications (VS Code, Discord…) keep a `Local State` too, not a `Default` profile.
                 if profile.join("Local State").is_file() && profile.join("Default").is_dir() {
                     found.push((profile.join("NativeMessagingHosts"), false));
                 }
             }
+        }
+        if cfg!(target_os = "macos") {
+            for dir in subdirs(&home.join(config)).into_iter().filter(|d| d.join("profiles.ini").is_file()) {
+                found.push((dir.join("NativeMessagingHosts"), true));
+            }
+            return found;
         }
         for dir in subdirs(home).into_iter().filter(|d| d.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.'))) {
             if std::iter::once(dir.clone()).chain(subdirs(&dir)).any(|d| d.join("profiles.ini").is_file()) {

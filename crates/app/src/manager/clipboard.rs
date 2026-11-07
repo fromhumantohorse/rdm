@@ -11,9 +11,9 @@ use url::Url;
 use super::{AddRequest, Manager, lock};
 use crate::settings::ClipboardMode;
 
-/// How often the clipboard is looked at. On Windows only a counter is read until it changes; on
-/// Linux the text itself has to be asked from the application that holds it: less often.
-const POLL: Duration = if cfg!(windows) { Duration::from_secs(1) } else { Duration::from_secs(2) };
+/// How often the clipboard is looked at. On Windows and macOS only a counter is read until it
+/// changes; on Linux the text itself has to be asked from the application that holds it: less often.
+const POLL: Duration = if cfg!(any(windows, target_os = "macos")) { Duration::from_secs(1) } else { Duration::from_secs(2) };
 /// Longer texts are not scanned for links (a copied document, not a link).
 const MAX_TEXT: usize = 64 << 10;
 const MAX_LINKS: usize = 20;
@@ -119,7 +119,7 @@ fn watch(manager: &Weak<Manager>) {
         }
         let now = clipboard_sequence();
         if !first && now.is_some() && now == sequence {
-            continue; // unchanged (Windows): nothing read
+            continue; // unchanged (Windows, macOS): nothing read
         }
         sequence = now;
         // A password manager's copy: not even read.
@@ -172,14 +172,25 @@ fn private_content() -> bool {
     }
 }
 
-/// Windows counts clipboard changes: reading the counter costs nothing. `None` elsewhere.
+/// Windows and macOS count clipboard changes: reading the counter costs nothing (and macOS shows no
+/// "pasted from" alert for it, as it may for reading the text). `None` elsewhere.
 fn clipboard_sequence() -> Option<u32> {
     #[cfg(windows)]
     {
         // SAFETY: no arguments, reads a counter.
         Some(unsafe { windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber() })
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::{class, msg_send, runtime::AnyObject};
+        // SAFETY: AppKit's shared pasteboard, readable from any thread; only its counter is read.
+        unsafe {
+            let board: *mut AnyObject = msg_send![class!(NSPasteboard), generalPasteboard];
+            let changes: isize = msg_send![board, changeCount];
+            Some(changes as u32)
+        }
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         None
     }

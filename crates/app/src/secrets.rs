@@ -1,7 +1,7 @@
 //! Passwords — site logins, the proxy's, the VirusTotal API key — kept apart from `settings.json`:
-//! on Windows encrypted with DPAPI (only this Windows account can decrypt them), on Linux in a file
-//! only the user can read (0600, like `~/.netrc`). Never shown in the list, never sent anywhere but
-//! to their site.
+//! on Windows encrypted with DPAPI (only this Windows account can decrypt them), on Linux and macOS
+//! in a file only the user can read (0600, like `~/.netrc`). Never shown in the list, never sent
+//! anywhere but to their site.
 
 use std::{io, path::Path};
 

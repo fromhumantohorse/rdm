@@ -4,14 +4,14 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    body::Bytes,
+    body::{Body, to_bytes},
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
 };
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use super::{access::guard, web};
+use super::{MAX_CHUNK, access::guard, web};
 use crate::manager::{Manager, Track};
 
 #[derive(Deserialize)]
@@ -50,11 +50,13 @@ pub(super) async fn append(
     headers: HeaderMap,
     Path(token): Path<String>,
     Query(chunk): Query<Chunk>,
-    body: Bytes,
+    body: Body,
 ) -> StatusCode {
     if let Err(status) = guard(&manager, &headers) {
         return status;
     }
+    // Read only now: any web page can post here, and must not get 32 MiB per request held in memory.
+    let Ok(body) = to_bytes(body, MAX_CHUNK).await else { return StatusCode::PAYLOAD_TOO_LARGE };
     match manager.record_append(&token, chunk.ms, chunk.track, &body).await {
         Ok(true) => StatusCode::NO_CONTENT,
         Ok(false) => StatusCode::NOT_FOUND,
