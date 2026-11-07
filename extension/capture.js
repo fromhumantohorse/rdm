@@ -98,9 +98,12 @@
     const info = buffers.get(this);
     if (active && info && !isAd()) {
       const incoming = data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-      const joined = new Uint8Array(info.pending.length + incoming.length);
-      joined.set(info.pending);
-      joined.set(incoming, info.pending.length);
+      let joined = incoming; // most appends follow a complete box: nothing to join, one copy less
+      if (info.pending.length) {
+        joined = new Uint8Array(info.pending.length + incoming.length);
+        joined.set(info.pending);
+        joined.set(incoming, info.pending.length);
+      }
       const cut = completeBoxes(joined);
       info.pending = joined.length - cut > MAX_PENDING ? new Uint8Array(0) : joined.slice(cut);
       if (cut > 0) {

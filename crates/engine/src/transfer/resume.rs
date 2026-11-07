@@ -5,7 +5,9 @@ use std::path::Path;
 
 use domain::Segment;
 use serde::{Deserialize, Serialize};
-use tokio::fs::{self, OpenOptions};
+use tokio::fs;
+
+use super::disk::Disk;
 
 /// What a resume state file holds: the file's version on the server when the download began, and
 /// how far each piece went.
@@ -33,10 +35,10 @@ pub(super) fn compact(mut segs: Vec<Segment>) -> Vec<Segment> {
     out
 }
 
-/// Syncs the data through a handle of its own (the connections keep writing through theirs),
-/// then records how far each piece went.
-pub(super) async fn persist(target: &Path, state: &Path, version: Option<&str>, segs: &[Segment]) -> std::io::Result<()> {
-    OpenOptions::new().write(true).open(target).await?.sync_data().await?;
+/// Syncs the data, then records how far each piece went: the state never claims bytes the disk
+/// may not hold yet.
+pub(super) async fn persist(disk: &std::sync::Arc<Disk>, state: &Path, version: Option<&str>, segs: &[Segment]) -> std::io::Result<()> {
+    disk.sync().await?;
     save_state(state, version, segs).await
 }
 

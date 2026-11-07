@@ -44,6 +44,11 @@ const MAX_TIMEOUT: Duration = Duration::from_secs(30);
 const START_WAIT: Duration = Duration::from_secs(20);
 /// Requests handled at once; more wait for their turn (a burst of links, a slow probe).
 const MAX_INFLIGHT: usize = 8;
+/// A running RDM's port takes a connection at once. Where nothing listens, Linux and macOS refuse at
+/// once, but Windows tries again for 2 s first: not worth waiting for (see `connect`).
+const CONNECT_WAIT: Duration = Duration::from_secs(1);
+/// A new RDM's port answers a moment before its token is written: refused once, then asked again.
+const TOKEN_WAIT: Duration = Duration::from_millis(500);
 
 /// Whether the browser started this process as the connector: Chrome and its derivatives pass
 /// the caller's origin (plus `--parent-window=…` on Windows), Firefox the manifest's path and the
@@ -183,7 +188,13 @@ fn handle(req: Request) -> Reply {
     }
     let call = || bridge_call(req.method, &req.path, body.as_deref(), browser.as_deref(), timeout);
     let result = match call() {
-        Err(e) if e.kind() == io::ErrorKind::ConnectionRefused && starts_rdm && start_rdm(&req.path) => call(),
+        Err(e) if e.kind() == io::ErrorKind::ConnectionRefused && starts_rdm && start_rdm(&req.path) => match call() {
+            Ok((403, _)) => {
+                std::thread::sleep(TOKEN_WAIT);
+                call()
+            }
+            other => other,
+        },
         other => other,
     };
     match result {
@@ -197,6 +208,12 @@ fn bridge_addr() -> SocketAddr {
     SocketAddr::from((Ipv4Addr::LOCALHOST, BRIDGE_PORT))
 }
 
+/// A connection to a port of this computer. Waiting for it longer than `CONNECT_WAIT` means nothing
+/// listens: said as a refusal, which is what starts RDM (a timeout on Windows, where it takes 2 s).
+fn connect(addr: &SocketAddr) -> io::Result<TcpStream> {
+    TcpStream::connect_timeout(addr, CONNECT_WAIT).map_err(|e| if e.kind() == io::ErrorKind::TimedOut { io::ErrorKind::ConnectionRefused.into() } else { e })
+}
+
 /// One HTTP/1.1 request to the bridge (`Connection: close`): status and body.
 fn bridge_call(method: Method, path: &str, body: Option<&[u8]>, browser: Option<&str>, timeout: Duration) -> io::Result<(u16, Vec<u8>)> {
     // The page's cookies go only to the user's own RDM: never to another account's program
@@ -204,7 +221,7 @@ fn bridge_call(method: Method, path: &str, body: Option<&[u8]>, browser: Option<
     if !crate::local::bridge_is_ours() {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
-    let mut stream = TcpStream::connect_timeout(&bridge_addr(), Duration::from_secs(2))?;
+    let mut stream = connect(&bridge_addr())?;
     stream.set_nodelay(true)?;
     stream.set_write_timeout(Some(timeout))?;
     stream.set_read_timeout(Some(timeout))?;
@@ -386,6 +403,19 @@ mod tests {
         assert!(!is_host(&args(&["--minimized"])));
         assert!(!is_host(&args(&["https://example.com/file.zip"])));
         assert!(!is_host(&args(&[])));
+    }
+
+    /// Regression: on Windows a refused connection took longer than the wait, read as "RDM does not
+    /// answer" (nothing to start) instead of "RDM is not running": a link from the page was lost.
+    #[test]
+    fn a_port_nothing_listens_on_is_refused_without_waiting_long() {
+        let free = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).and_then(|l| l.local_addr()).unwrap();
+
+        let started = Instant::now();
+        let error = connect(&free).expect_err("nothing listens there");
+
+        assert_eq!(error.kind(), io::ErrorKind::ConnectionRefused);
+        assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
     }
 
     #[test]

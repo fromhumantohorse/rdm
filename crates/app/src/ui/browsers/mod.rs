@@ -190,7 +190,9 @@ impl App<'_> {
                                 *open = Some(browser);
                             }
                             // An icon: beside "Reinstall", a second labelled button left no room for the status line.
+                            // Safari: only from its own settings.
                             if seen.is_some()
+                                && browser.flavour() != Flavour::Safari
                                 && widgets::icon_button(ui, icon::TRASH, tr!("Supprimer l'extension", "Remove the extension"), Some(p.danger))
                                     .on_hover_text(tr!(
                                         "La désinstalle de ce navigateur à son prochain échange avec RDM (déjà supprimée : RDM l'oublie).",

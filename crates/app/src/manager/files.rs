@@ -64,12 +64,25 @@ fn same_file(a: &Path, b: &Path) -> bool {
     if cfg!(any(windows, target_os = "macos")) { a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase() } else { a == b }
 }
 
+/// A target can itself be another transfer's sidecar (`video.mp4.rdm`, for example). Reserve
+/// both sets of files, even before either transfer has created its first file on disk.
+fn files_overlap(a: &Path, b: &Path) -> bool {
+    cleanup_suffixes().any(|left| cleanup_suffixes().any(|right| same_file(&with_suffix(a, left), &with_suffix(b, right))))
+}
+
 /// What a download of the list writes, for choosing new names without holding the list's lock
 /// while the disk is looked at (a slow or sleeping disk must not freeze the window).
+#[derive(Clone)]
 pub(super) struct Planned {
-    id: DownloadId,
+    pub(super) id: DownloadId,
     target: PathBuf,
     completed: bool,
+}
+
+/// A removed entry still owns its path until its asynchronous cleanup ends, even when it was
+/// completed: choosing "overwrite" must not put a new download under the pending deletion.
+pub(super) fn reserved(entry: &Entry) -> Planned {
+    Planned { id: entry.download.id, target: entry.download.target.clone(), completed: false }
 }
 
 /// The files the list writes (or wrote).
@@ -95,7 +108,9 @@ pub(super) fn target_for(settings: &Settings, name: &str, taken: &[Planned], exc
             let link = fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink());
             // Another download of the list still writing (or to write) that file keeps it: two
             // transfers into one file would corrupt both. A completed one gives it up.
-            let planned = taken.iter().any(|e| same_file(&e.target, &path) && Some(e.id) != except && !e.completed);
+            let planned = taken.iter().any(|e| {
+                Some(e.id) != except && files_overlap(&e.target, &path) && (!e.completed || !same_file(&e.target, &path))
+            });
             if link || planned || path.is_dir() {
                 return Some(unique_path(&dir, name, taken, except));
             }
@@ -119,9 +134,8 @@ pub(super) fn unique_path(dir: &Path, name: &str, taken: &[Planned], except: Opt
             (_, None) => dir.join(format!("{stem} ({i})")),
         })
         .find(|p| {
-            !p.exists()
-                && !with_suffix(p, engine::STATE_SUFFIX).exists()
-                && !taken.iter().any(|e| same_file(&e.target, p) && Some(e.id) != except)
+            !cleanup_suffixes().any(|suffix| fs::symlink_metadata(with_suffix(p, suffix)).is_ok())
+                && !taken.iter().any(|e| files_overlap(&e.target, p) && Some(e.id) != except)
         })
         .expect("unbounded range always yields a free name")
 }
@@ -129,6 +143,44 @@ pub(super) fn unique_path(dir: &Path, name: &str, taken: &[Planned], except: Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_deletions_and_sidecars_keep_their_names_reserved() {
+        let dir = std::env::temp_dir().join(format!("rdm-reserved-{}", uuid::Uuid::new_v4()));
+        let settings = Settings { download_dir: dir.clone(), categorize: false, existing: ExistingFile::Overwrite, ..Settings::default() };
+        let mut download = Download::new("https://example.com/video.mp4".parse().unwrap(), dir.join("video.mp4"), 1);
+        download.start().unwrap();
+        download.complete().unwrap();
+        let entry = Entry::new(download, vec![], 0, 0);
+        assert_eq!(target_for(&settings, "video.mp4", &planned(&[entry]), None), Some(dir.join("video.mp4")));
+
+        let entry = Entry::new(Download::new("https://example.com/video.mp4".parse().unwrap(), dir.join("video.mp4"), 1), vec![], 0, 0);
+        let taken = [reserved(&entry)];
+        assert_eq!(target_for(&settings, "video.mp4", &taken, None), Some(dir.join("video (1).mp4")));
+        assert_eq!(unique_path(&dir, "video.mp4.rdm", &taken, None), dir.join("video.mp4 (1).rdm"));
+        assert_eq!(target_for(&settings, "video.mp4.rdm", &taken, None), Some(dir.join("video.mp4 (1).rdm")));
+        let sidecar = [Planned { id: DownloadId::new(), target: dir.join("video.mp4.rdm"), completed: true }];
+        assert_eq!(target_for(&settings, "video.mp4", &sidecar, None), Some(dir.join("video (1).mp4")));
+    }
+
+    #[test]
+    fn orphaned_parts_are_not_reused_by_an_unrelated_download() {
+        let dir = std::env::temp_dir().join(format!("rdm-orphan-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("video.mp4.audio.part"), b"old audio").unwrap();
+        assert_eq!(unique_path(&dir, "video.mp4", &[], None), dir.join("video (1).mp4"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_symlinks_do_not_count_as_free_names() {
+        let dir = std::env::temp_dir().join(format!("rdm-symlink-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        std::os::unix::fs::symlink(dir.join("missing"), dir.join("report.pdf")).unwrap();
+        assert_eq!(unique_path(&dir, "report.pdf", &[], None), dir.join("report (1).pdf"));
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn cleanup_covers_every_temporary_file() {
@@ -141,7 +193,7 @@ mod tests {
     #[test]
     fn only_recording_chunks_count_as_leftovers() {
         let target = PathBuf::from("dl").join("Clip.mp4");
-        let recording = Recording { id: DownloadId::new(), target, parts: HashMap::new(), last_heard: Instant::now(), files: HashMap::new() };
+        let recording = Recording { id: DownloadId::new(), target, parts: HashMap::new(), last_heard: Instant::now(), files: HashMap::new(), pending: Arc::default() };
         let part = recording.part(3, Track::Audio);
         assert!(is_recording_part("Clip.mp4", &part.file_name().unwrap().to_string_lossy()));
         assert!(is_recording_part("Clip.mp4", "Clip.mp4.rec12.video"));

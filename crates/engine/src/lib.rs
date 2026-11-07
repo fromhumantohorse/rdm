@@ -4,9 +4,9 @@ mod client;
 mod error;
 mod hls;
 mod merged;
-mod pace;
 pub mod mux;
 pub mod net;
+mod pace;
 mod probe;
 mod rate;
 mod slots;
@@ -39,12 +39,7 @@ pub use tokio_util::sync::CancellationToken;
 pub const STATE_SUFFIX: &str = ".rdm";
 
 /// Downloads `job` to completion, or until `cancel` fires (resumable state is then kept next to the file).
-pub async fn run(
-    client: &Client,
-    job: &Job,
-    progress: Arc<Progress>,
-    cancel: CancellationToken,
-) -> Result<Outcome, EngineError> {
+pub async fn run(client: &Client, job: &Job, progress: Arc<Progress>, cancel: CancellationToken) -> Result<Outcome, EngineError> {
     // Boxed: two transfers side by side make a large future, which every download's task would
     // otherwise carry.
     let result = match &job.audio {
@@ -68,12 +63,17 @@ pub async fn hls_info(client: &Client, url: &Url, headers: &HeaderMap) -> Result
 }
 
 /// `Content-Range: bytes <start>-<end>/<total>` of a partial answer: where it starts, and the
-/// file's size when the server tells it (`*`: unknown).
-pub(crate) fn content_range(headers: &HeaderMap) -> Option<(u64, Option<u64>)> {
+/// inclusive end, and the file's size when the server tells it (`*`: unknown).
+pub(crate) fn content_range(headers: &HeaderMap) -> Option<(u64, u64, Option<u64>)> {
     let value = headers.get(header::CONTENT_RANGE)?.to_str().ok()?.trim();
     let (range, total) = value.strip_prefix("bytes ")?.split_once('/')?;
-    let start = range.split_once('-')?.0.trim().parse().ok()?;
-    Some((start, total.trim().parse().ok()))
+    let (start, end) = range.split_once('-')?;
+    let (start, end) = (start.trim().parse::<u64>().ok()?, end.trim().parse::<u64>().ok()?);
+    let total = match total.trim() {
+        "*" => None,
+        total => Some(total.parse::<u64>().ok()?),
+    };
+    (start <= end && end < u64::MAX && total.is_none_or(|size| end < size)).then_some((start, end, total))
 }
 
 /// How long a server asks to wait before the next request (`Retry-After`: seconds, or a date).
@@ -102,15 +102,7 @@ pub struct Job {
 
 impl Job {
     pub fn new(url: Url, target: PathBuf) -> Self {
-        Self {
-            url,
-            target,
-            connections: domain::DEFAULT_CONNECTIONS,
-            headers: HeaderMap::new(),
-            audio: None,
-            limit: Arc::default(),
-            own_limit: Arc::default(),
-        }
+        Self { url, target, connections: domain::DEFAULT_CONNECTIONS, headers: HeaderMap::new(), audio: None, limit: Arc::default(), own_limit: Arc::default() }
     }
 
     /// The tighter of the global and the download's own limit (bytes per second, 0 = none).
@@ -145,11 +137,7 @@ impl Progress {
     }
 
     pub fn snapshot(&self) -> (u64, u64, usize) {
-        (
-            self.downloaded.load(Ordering::Relaxed),
-            self.total.load(Ordering::Relaxed),
-            self.active.load(Ordering::Relaxed),
-        )
+        (self.downloaded.load(Ordering::Relaxed), self.total.load(Ordering::Relaxed), self.active.load(Ordering::Relaxed))
     }
 }
 
@@ -201,10 +189,13 @@ mod tests {
     #[test]
     fn parses_content_range() {
         let range = |v: &str| content_range(&HeaderMap::from_iter([(header::CONTENT_RANGE, v.parse().unwrap())]));
-        assert_eq!(range("bytes 1024-2047/4096"), Some((1024, Some(4096))));
-        assert_eq!(range("bytes 0-0/*"), Some((0, None)), "size unknown");
+        assert_eq!(range("bytes 1024-2047/4096"), Some((1024, 2047, Some(4096))));
+        assert_eq!(range("bytes 0-0/*"), Some((0, 0, None)), "size unknown");
         assert_eq!(range("bytes */4096"), None, "no range at all");
         assert_eq!(range("items 0-1/2"), None);
+        for invalid in ["bytes 10-9/100", "bytes 0-100/100", "bytes 0-0/0", "bytes 0-x/100", "bytes 0-0/garbage", "bytes 0-18446744073709551615/*"] {
+            assert_eq!(range(invalid), None, "{invalid}");
+        }
         assert_eq!(content_range(&HeaderMap::new()), None);
     }
 

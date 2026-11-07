@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { browserKey, dispositionName, downloadName, isCapturable, isHls, isMediaType, isMediaUrl, isModelType, isModelUrl, siteOf } from "../shared.js";
+import { browserKey, dispositionName, downloadName, isCapturable, isSafari, kindOf, sameSite, siteOf } from "../shared.js";
 
 const LIST = "zip mp4 webm iso 7z";
 
@@ -35,25 +35,31 @@ test("user list syntax is forgiving", () => {
 });
 
 test("media and HLS detection", () => {
-  assert.ok(isHls("https://cdn.io/v/master.m3u8?x=1"));
-  assert.ok(isHls("https://cdn.io/v/playlist", "application/vnd.apple.mpegurl"));
-  assert.ok(isMediaUrl("https://cdn.io/a.mp4"));
-  assert.ok(!isMediaUrl("not a url"));
-  assert.ok(isMediaType("video/mp4"));
-  assert.ok(!isMediaType("video/mp2t"));
+  assert.equal(kindOf("https://cdn.io/v/master.m3u8?x=1"), "hls");
+  assert.equal(kindOf("https://cdn.io/v/playlist", "application/vnd.apple.mpegurl"), "hls");
+  assert.equal(kindOf("https://cdn.io/a.mp4"), "media");
+  assert.equal(kindOf("https://cdn.io/stream", "video/mp4"), "media");
+  assert.equal(kindOf("https://cdn.io/seg", "video/mp2t"), "");
+  assert.equal(kindOf("not a url"), "");
 });
 
 test("3D model detection", () => {
-  assert.ok(isModelUrl("https://cdn.io/m/Helmet.glb?v=2"));
-  assert.ok(isModelUrl("https://cdn.io/m/scene.GLTF"));
-  assert.ok(isModelUrl("https://media.sketchfab.com/models/x/y/files/z/file.osgjs.gz"));
-  assert.ok(isModelUrl("https://media.sketchfab.com/models/x/y/files/z/model_file.binz"));
-  assert.ok(!isModelUrl("https://media.sketchfab.com/models/x/y/files/z/model_file_wireframe.binz"));
-  assert.ok(!isModelUrl("https://cdn.io/data.bin"));
-  assert.ok(!isModelUrl("not a url"));
-  assert.ok(isModelType("model/gltf-binary"));
-  assert.ok(isModelType("application/sla"));
-  assert.ok(!isModelType("application/octet-stream"));
+  assert.equal(kindOf("https://cdn.io/m/Helmet.glb?v=2"), "model");
+  assert.equal(kindOf("https://cdn.io/m/scene.GLTF"), "model");
+  assert.equal(kindOf("https://media.sketchfab.com/models/x/y/files/z/file.osgjs.gz"), "model");
+  assert.equal(kindOf("https://media.sketchfab.com/models/x/y/files/z/model_file.binz"), "model");
+  assert.equal(kindOf("https://media.sketchfab.com/models/x/y/files/z/model_file_wireframe.binz"), "");
+  assert.equal(kindOf("https://cdn.io/data.bin"), "");
+  assert.equal(kindOf("https://cdn.io/x", "model/gltf-binary"), "model");
+  assert.equal(kindOf("https://cdn.io/x", "application/sla"), "model");
+  assert.equal(kindOf("https://cdn.io/x", "application/octet-stream"), "");
+});
+
+test("Safari is told apart from what borrows its name", () => {
+  assert.ok(isSafari("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15"));
+  assert.ok(!isSafari("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"));
+  assert.ok(!isSafari("Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0"));
+  assert.ok(!isSafari("Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0"));
 });
 
 test("site comparison for SameSite cookies", () => {
@@ -74,6 +80,16 @@ test("site comparison for SameSite cookies", () => {
   assert.notEqual(siteOf("https://a.s3.amazonaws.com/"), siteOf("https://b.s3.amazonaws.com/"));
   assert.notEqual(siteOf("https://github.io/"), siteOf("https://bob.github.io/"));
   assert.equal(siteOf("https://github.com/"), siteOf("https://api.github.com/"), "only the platform's own suffix");
+  assert.notEqual(siteOf("http://127.0.0.1/"), siteOf("http://10.0.0.1/"));
+  assert.equal(siteOf("http://[::1]:9614/"), "[::1]");
+});
+
+test("SameSite cookies require matching schemes and valid web sites", () => {
+  assert.ok(sameSite("https://www.example.com/a", "https://cdn.example.com/b"));
+  assert.ok(!sameSite("http://www.example.com/a", "https://cdn.example.com/b"));
+  assert.ok(!sameSite("http://127.0.0.1/", "http://10.0.0.1/"));
+  assert.ok(!sameSite("invalid", "invalid"));
+  assert.ok(!sameSite("file:///one", "file:///two"));
 });
 
 test("file name of a Content-Disposition header", () => {

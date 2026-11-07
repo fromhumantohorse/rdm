@@ -129,6 +129,7 @@ pub fn run(manager: Arc<Manager>, minimized: bool) -> eframe::Result {
         if windowless {
             #[cfg(target_os = "macos")]
             dock_icon(false);
+            crate::priority::give_memory_back();
             let mut idle = Idle { shell: &shell, manager: &manager, tray: tray.as_mut(), wake: None };
             let ran = event_loop.run_app_on_demand(&mut idle);
             match (ran, idle.wake) {

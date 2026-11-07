@@ -1,7 +1,7 @@
 //! Reading playlists (RFC 8216): a master's qualities and their audio renditions, a media
 //! playlist's segments with their keys, byte ranges and initialization section.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use serde::Serialize;
 use url::Url;
@@ -19,7 +19,6 @@ pub struct Variant {
     pub height: Option<u32>,
 }
 
-#[derive(Clone)]
 pub(super) struct Key {
     pub(super) url: Url,
     pub(super) iv: Option<[u8; 16]>,
@@ -27,7 +26,8 @@ pub(super) struct Key {
 
 pub(super) struct Part {
     pub(super) url: Url,
-    pub(super) key: Option<Key>,
+    /// Shared: a long stream has a hundred thousand segments, and most often one key.
+    pub(super) key: Option<Arc<Key>>,
     pub(super) seq: u64,
     /// `EXT-X-BYTERANGE`: (offset, length) inside `url`.
     pub(super) range: Option<(u64, u64)>,
@@ -75,7 +75,8 @@ fn parse_master(base: &Url, text: &str) -> Vec<Variant> {
     for line in &lines {
         if let Some(attrs) = line.strip_prefix("#EXT-X-STREAM-INF:") {
             pending = Some(attrs);
-        } else if !line.is_empty() && !line.starts_with('#')
+        } else if !line.is_empty()
+            && !line.starts_with('#')
             && let (Some(attrs), Ok(url)) = (pending.take(), base.join(line))
         {
             variants.push(Variant {
@@ -105,10 +106,10 @@ fn parse_media(base: &Url, text: &str) -> Result<Vec<Part>, EngineError> {
         } else if let Some(a) = line.strip_prefix("#EXT-X-KEY:") {
             key = match attr(a, "METHOD") {
                 Some("NONE") => None,
-                Some("AES-128") => Some(Key {
+                Some("AES-128") => Some(Arc::new(Key {
                     url: join(attr(a, "URI").ok_or(PlaylistError::KeyWithoutUri)?)?,
-                    iv: attr(a, "IV").and_then(parse_iv),
-                }),
+                    iv: attr(a, "IV").map(|iv| parse_iv(iv).ok_or(PlaylistError::InvalidKey)).transpose()?,
+                })),
                 _ => return Err(PlaylistError::Drm.into()),
             };
         } else if let Some(a) = line.strip_prefix("#EXT-X-MAP:") {
@@ -124,11 +125,17 @@ fn parse_media(base: &Url, text: &str) -> Result<Vec<Part>, EngineError> {
             };
             // After a key, the section is encrypted with it, and RFC 8216 then requires its IV:
             // written as is, it would make a "complete" file no player can read.
-            parts.push(Part { url: join(uri)?, key: key.clone().filter(|k| k.iv.is_some()), seq, range });
+            if key.as_ref().is_some_and(|key| key.iv.is_none()) {
+                return Err(PlaylistError::InvalidKey.into());
+            }
+            parts.push(Part { url: join(uri)?, key: key.clone(), seq, range });
         } else if !line.is_empty() && !line.starts_with('#') {
             let url = join(line)?;
             let range = match pending_range.take() {
-                None => None,
+                None => {
+                    last_end = None;
+                    None
+                }
                 Some((len, offset)) => {
                     let offset = match (offset, &last_end) {
                         (Some(o), _) => o,
@@ -264,8 +271,15 @@ mod tests {
         let without_iv = "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"k.bin\"\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:4,\na.m4s\n";
 
         assert_eq!(parts(with_iv)[0].key.as_ref().unwrap().iv.unwrap()[15], 10);
-        assert!(parts(without_iv)[0].key.is_none(), "no IV: RFC 8216 says it cannot be encrypted");
-        assert!(parts(without_iv)[1].key.is_some(), "its segments are");
+        assert!(
+            matches!(parse(&base(), without_iv), Err(EngineError::Playlist(PlaylistError::InvalidKey))),
+            "an encrypted map without an IV cannot be decoded"
+        );
+        let malformed_iv = with_iv.replace("0x0A", "0xwrong");
+        assert!(
+            matches!(parse(&base(), &malformed_iv), Err(EngineError::Playlist(PlaylistError::InvalidKey))),
+            "never silently substitute the sequence number for an invalid IV"
+        );
     }
 
     #[test]
@@ -278,6 +292,11 @@ mod tests {
         assert_eq!(ranges, [Some((0, 616)), Some((616, 1000)), Some((1616, 500))]);
         let orphan = "#EXTM3U\n#EXTINF:6,\n#EXT-X-BYTERANGE:500\nmain.mp4\n";
         assert!(parse(&base(), orphan).is_err());
+        let interrupted = "#EXTM3U\n#EXT-X-BYTERANGE:10@0\nmain.mp4\nother.ts\n#EXT-X-BYTERANGE:10\nmain.mp4\n";
+        assert!(
+            matches!(parse(&base(), interrupted), Err(EngineError::Playlist(PlaylistError::ByteRangeWithoutOffset))),
+            "only the immediately preceding segment supplies an implicit offset"
+        );
         assert!(parse_byterange("0@5").is_none());
         assert!(parse_byterange("18446744073709551615@1").is_none());
         let overflow = "#EXTM3U\n#EXT-X-MAP:URI=\"main.mp4\",BYTERANGE=\"616@18446744073709551615\"\n#EXTINF:6,\nmain.mp4\n";

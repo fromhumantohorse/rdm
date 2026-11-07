@@ -13,6 +13,36 @@ pub(super) fn steps(ui: &mut Ui, p: &Palette, manager: &Arc<Manager>, (browser, 
     let reopen_package = tr!("Rouvrir le paquet", "Reopen the package");
     let unsigned_xpi = done.xpi.as_deref();
     match (browser.flavour(), unsigned_xpi) {
+        (Flavour::Safari, _) => {
+            let first = if done.launched {
+                tr!("Les réglages de Safari viennent de s'ouvrir sur les extensions : cochez « RDM ».", "Safari's settings just opened on its extensions: tick \"RDM\".")
+            } else {
+                tr!("Dans Safari : Réglages → Extensions, cochez « RDM ».", "In Safari: Settings → Extensions, tick \"RDM\".")
+            };
+            step(ui, p, 1, first);
+            step(ui, p, 2, tr!("Autorisez-la sur tous les sites : c'est ainsi qu'elle voit les téléchargements.", "Allow it on every website: that is how it sees downloads."));
+            step(ui, p, 3, connects_itself());
+            note(
+                ui,
+                p,
+                tr!(
+                    "RDM n'est pas signé par un compte Apple Developer : Safari ne montre l'extension qu'avec « Autoriser les extensions non signées » (réglages développeur de Safari), à cocher à chaque ouverture de Safari.",
+                    "RDM is not signed by an Apple Developer account: Safari only shows the extension with \"Allow unsigned extensions\" (Safari's developer settings), to tick each time Safari opens."
+                ),
+            );
+            ui.add_space(6.0);
+            if ghost_button(ui, icon::ARROW_SQUARE_OUT, tr!("Rouvrir les réglages de Safari", "Reopen Safari's settings")).clicked() {
+                extension::open_safari_settings();
+            }
+            return;
+        }
+        (Flavour::Chromium, _) if done.store => {
+            let page = extension::store_page();
+            step(ui, p, 1, &opened(&page));
+            step(ui, p, 2, tr!("Cliquez sur son bouton d'ajout (« Ajouter à Chrome »…), puis confirmez : le navigateur demande votre accord.", "Click its add button (\"Add to Chrome\"…), then confirm: the browser asks for your go-ahead."));
+            step(ui, p, 3, connects_itself());
+            reopen = (page, tr!("Rouvrir la page", "Reopen the page"));
+        }
         (Flavour::Chromium, _) => {
             let page = opened(browser.extensions_page());
             step(ui, p, 1, &trf!("{page} Activez le « Mode développeur » (interrupteur de la page).", "{page} Turn on \"Developer mode\" (the page's switch).", page = page));

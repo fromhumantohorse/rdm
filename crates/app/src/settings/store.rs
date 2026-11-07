@@ -90,6 +90,20 @@ pub fn save_json(name: &str, value: &impl Serialize) -> io::Result<()> {
     written
 }
 
+/// Writes `bytes` to `path` unless it already holds them, its folder created if needed, never half
+/// a file under its name (temporary file + rename).
+pub fn write_if_changed(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    if fs::read(path).is_ok_and(|old| old == bytes) {
+        return Ok(());
+    }
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let tmp = with_suffix(path, ".tmp");
+    fs::write(&tmp, bytes)?;
+    fs::rename(tmp, path)
+}
+
 /// RDM's settings folder, private to the user on Linux and macOS (0700, like `~/.ssh`): the download
 /// list holds links with their access tokens. Windows: the profile folder is private already.
 pub fn create_private_dir(dir: &Path) -> io::Result<()> {

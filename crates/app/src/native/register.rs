@@ -1,9 +1,10 @@
 //! Registering the connector with the browsers: its manifest (which extension may start it) where
 //! each browser family looks for it, pointing at the installed RDM.
 
-use std::{io, path::Path};
+use std::path::Path;
 
 use super::{CHROME_ORIGIN, CHROME_STORE_ORIGIN, FIREFOX_ID, HOST};
+use crate::settings::write_if_changed;
 
 /// The host manifest: Chromium-based browsers list allowed origins, Firefox allowed extension IDs.
 fn manifest(exe: &Path, firefox: bool) -> Vec<u8> {
@@ -19,19 +20,6 @@ fn manifest(exe: &Path, firefox: bool) -> Vec<u8> {
         m["allowed_origins"] = serde_json::json!([CHROME_ORIGIN, CHROME_STORE_ORIGIN]);
     }
     serde_json::to_vec_pretty(&m).unwrap_or_default()
-}
-
-/// Writes `bytes` to `path` unless it already holds them.
-fn write_if_changed(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    if std::fs::read(path).is_ok_and(|old| old == bytes) {
-        return Ok(());
-    }
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let tmp = crate::settings::with_suffix(path, ".tmp");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(tmp, path)
 }
 
 /// At start (in the background): registers the connector with the browsers, pointing at the

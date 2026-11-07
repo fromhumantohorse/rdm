@@ -242,25 +242,39 @@ const REGISTRY_SECOND_LEVELS: [&str; 18] =
 /// section, most visited part): `alice.github.io` and `bob.github.io` are two sites. Same list as
 /// `extension/shared.js`.
 const SHARED_HOSTS: [&str; 20] = [
-    "appspot.com", "azurewebsites.net", "blogspot.com", "cloudfront.net", "firebaseapp.com", "fly.dev", "github.io",
-    "gitlab.io", "glitch.me", "herokuapp.com", "netlify.app", "neocities.org", "onrender.com", "pages.dev", "s3.amazonaws.com",
-    "tumblr.com", "vercel.app", "web.app", "wordpress.com", "workers.dev",
+    "appspot.com",
+    "azurewebsites.net",
+    "blogspot.com",
+    "cloudfront.net",
+    "firebaseapp.com",
+    "fly.dev",
+    "github.io",
+    "gitlab.io",
+    "glitch.me",
+    "herokuapp.com",
+    "netlify.app",
+    "neocities.org",
+    "onrender.com",
+    "pages.dev",
+    "s3.amazonaws.com",
+    "tumblr.com",
+    "vercel.app",
+    "web.app",
+    "wordpress.com",
+    "workers.dev",
 ];
 
 fn site(host: &str) -> String {
     let host = host.trim_end_matches('.').to_ascii_lowercase();
     let labels: Vec<&str> = host.split('.').collect();
     // Labels of the suffix under which sites are registered.
-    let suffix = SHARED_HOSTS
-        .iter()
-        .find(|shared| host.strip_suffix(**shared).is_some_and(|rest| rest.ends_with('.')))
-        .map_or_else(
-            || match labels.as_slice() {
-                [.., second, tld] if tld.len() == 2 && REGISTRY_SECOND_LEVELS.contains(second) => 2,
-                _ => 1,
-            },
-            |shared| shared.split('.').count(),
-        );
+    let suffix = SHARED_HOSTS.iter().find(|shared| host.strip_suffix(**shared).is_some_and(|rest| rest.ends_with('.'))).map_or_else(
+        || match labels.as_slice() {
+            [.., second, tld] if tld.len() == 2 && REGISTRY_SECOND_LEVELS.contains(second) => 2,
+            _ => 1,
+        },
+        |shared| shared.split('.').count(),
+    );
     labels[labels.len().saturating_sub(suffix + 1)..].join(".")
 }
 
@@ -269,14 +283,21 @@ fn site(host: &str) -> String {
 /// must not receive them — what browsers do, and what the HTTP client does on redirects. Given
 /// over HTTPS, they never travel in clear either: an `http://` segment of the same site gets none.
 pub(crate) fn headers_for<'h>(headers: &'h HeaderMap, from: &Url, to: &Url) -> Cow<'h, HeaderMap> {
-    let credentials = [header::COOKIE, header::AUTHORIZATION, header::PROXY_AUTHORIZATION];
     let downgrade = from.scheme() == "https" && to.scheme() != "https";
-    if (same_site(from, to) && !downgrade) || !credentials.iter().any(|h| headers.contains_key(h)) {
+    let strip_cookie = (!same_site(from, to) || downgrade) && headers.contains_key(header::COOKIE);
+    // HTTP authentication is scoped to an origin, not a registrable domain: a sibling host or
+    // another port must not receive a saved login just because cookies may be shared with it.
+    let strip_auth = from.origin() != to.origin() && [header::AUTHORIZATION, header::PROXY_AUTHORIZATION].iter().any(|h| headers.contains_key(h));
+    if !strip_cookie && !strip_auth {
         return Cow::Borrowed(headers);
     }
     let mut stripped = headers.clone();
-    for h in credentials {
-        stripped.remove(h);
+    if strip_cookie {
+        stripped.remove(header::COOKIE);
+    }
+    if strip_auth {
+        stripped.remove(header::AUTHORIZATION);
+        stripped.remove(header::PROXY_AUTHORIZATION);
     }
     Cow::Owned(stripped)
 }
@@ -292,9 +313,19 @@ mod tests {
     #[test]
     fn classifies_hosts() {
         for local in [
-            "http://127.0.0.1/", "http://10.0.0.8/", "http://192.168.1.1/", "http://172.16.0.1/", "http://169.254.1.1/",
-            "http://100.64.0.1/", "http://[::1]/", "http://[fd00::1]/", "http://[fe80::1]/", "http://[::ffff:192.168.0.1]/",
-            "http://localhost:8080/", "http://printer.local/", "http://0.0.0.0/",
+            "http://127.0.0.1/",
+            "http://10.0.0.8/",
+            "http://192.168.1.1/",
+            "http://172.16.0.1/",
+            "http://169.254.1.1/",
+            "http://100.64.0.1/",
+            "http://[::1]/",
+            "http://[fd00::1]/",
+            "http://[fe80::1]/",
+            "http://[::ffff:192.168.0.1]/",
+            "http://localhost:8080/",
+            "http://printer.local/",
+            "http://0.0.0.0/",
         ] {
             assert!(is_local(&u(local)), "{local}");
         }
@@ -452,7 +483,11 @@ mod tests {
         h.insert(header::AUTHORIZATION, "Basic dTpw".parse().unwrap());
         h.insert(header::REFERER, "https://www.example.com/".parse().unwrap());
         let from = u("https://www.example.com/master.m3u8");
-        assert!(matches!(headers_for(&h, &from, &u("https://cdn.example.com/seg.ts")), Cow::Borrowed(_)));
+        let sibling = headers_for(&h, &from, &u("https://cdn.example.com/seg.ts"));
+        assert!(sibling.contains_key(header::COOKIE));
+        assert!(!sibling.contains_key(header::AUTHORIZATION), "a sibling CDN cannot receive the site's login");
+        let another_port = headers_for(&h, &from, &u("https://www.example.com:8443/seg.ts"));
+        assert!(!another_port.contains_key(header::AUTHORIZATION), "another port is another authentication origin");
         let foreign = headers_for(&h, &from, &u("https://tracker.example.net/seg.ts"));
         assert!(!foreign.contains_key(header::COOKIE) && !foreign.contains_key(header::AUTHORIZATION));
         assert!(foreign.contains_key(header::REFERER), "only credentials are dropped");

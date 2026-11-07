@@ -38,7 +38,7 @@ pub(super) fn browser_tab(ui: &mut Ui, p: &Palette, s: &mut Settings) -> Option<
             ui,
             &mut s.offer_extension,
             tr!("Proposer l'extension au lancement d'un navigateur", "Offer the extension when a browser starts"),
-            tr!("Quand un navigateur sans l'extension démarre, RDM propose de l'installer", "When a browser without the extension starts, RDM offers to install it"),
+            tr!("Quand un navigateur sans l'extension s'ouvre, RDM la lance dedans : il demande votre accord pour l'ajouter", "When a browser without the extension opens, RDM starts it there: the browser asks your go-ahead to add it"),
         );
     });
 

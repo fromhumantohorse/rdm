@@ -102,12 +102,12 @@ fi
 export CARGO_TARGET_DIR="$target"
 
 say "Building RDM (a few minutes the first time)"
-"$cargo" build --release -p rdm
+"$cargo" build --locked --release -p rdm
 # A binary built elsewhere (another toolchain, a Flatpak SDK) may need a newer glibc: rebuild it.
 if ldd "$target/release/rdm" 2>&1 | grep -q 'not found'; then
     say "Rebuilding RDM for this system"
     "$cargo" clean --release -p rdm
-    "$cargo" build --release -p rdm
+    "$cargo" build --locked --release -p rdm
 fi
 
 say "Installing: applications menu, icon, start at login"

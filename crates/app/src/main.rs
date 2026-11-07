@@ -4,6 +4,7 @@ mod autostart;
 mod bridge;
 mod extension;
 mod hex;
+mod http;
 mod i18n;
 mod local;
 mod manager;
@@ -49,6 +50,7 @@ fn main() -> eframe::Result {
     }
     update::remember_exe();
     priority::full_speed_in_background();
+    thrifty_allocator();
     // Transfers are I/O-bound: a few workers drive 64 connections; fewer threads, less memory.
     let workers = std::thread::available_parallelism().map_or(2, |n| n.get().clamp(2, 4));
     let built = tokio::runtime::Builder::new_multi_thread()
@@ -94,7 +96,7 @@ fn main() -> eframe::Result {
         manager.add(AddRequest::from_url(url));
     }
     rt.spawn(bridge::serve(manager.clone(), listener));
-    manager.watch_browsers();
+    manager.watch_browsers(!minimized);
     #[cfg(unix)]
     rt.spawn(quit_on_signal(manager.clone()));
     let result = ui::run(manager.clone(), minimized); // returns once the manager has shut down
@@ -157,6 +159,20 @@ fn prefer_x11_under_wslg() {
         // SAFETY: first thing in `main`, before any other thread exists (nothing reads the
         // environment concurrently).
         unsafe { std::env::remove_var("WAYLAND_DISPLAY") };
+    }
+}
+
+/// Linux: glibc keeps what a thread frees in that thread's own arena, and from the first large
+/// buffer freed keeps those too: a download's peak would stay in RDM's memory for good. Two arenas,
+/// and from 1 MiB (a connection's write buffer, reused all along) given back to the system when
+/// freed. Not lower: the network's read buffers, up to 400 KiB and many a second at full speed, would
+/// each cost page faults.
+fn thrifty_allocator() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: before the runtime's threads: nothing allocates concurrently; plain settings.
+    unsafe {
+        libc::mallopt(libc::M_ARENA_MAX, 2);
+        libc::mallopt(libc::M_MMAP_THRESHOLD, 1 << 20);
     }
 }
 

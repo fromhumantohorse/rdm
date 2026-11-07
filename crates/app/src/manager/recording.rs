@@ -30,10 +30,36 @@ pub(super) struct Recording {
     /// Each part's file, kept open while the recording runs: closing a growing file after every
     /// chunk made Windows' antivirus scan all of it again each time.
     pub(super) files: HashMap<(u32, Track), PartFile>,
+    /// Registered writes include opening the file: finish/cancel must wait for all of them.
+    pub(super) pending: Arc<AtomicUsize>,
 }
 
 /// A recording part's file, written chunk after chunk (one writer at a time).
-pub(super) type PartFile = Arc<tokio::sync::Mutex<tokio::fs::File>>;
+pub(super) type PartFile = Arc<tokio::sync::Mutex<Option<tokio::fs::File>>>;
+
+struct PendingWrite(Arc<AtomicUsize>);
+
+impl PendingWrite {
+    fn new(pending: &Arc<AtomicUsize>) -> Self {
+        pending.fetch_add(1, AcqRel);
+        Self(pending.clone())
+    }
+}
+
+impl Drop for PendingWrite {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, AcqRel);
+    }
+}
+
+impl Recording {
+    async fn drain(&mut self) {
+        while self.pending.load(Acquire) > 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        self.files.clear();
+    }
+}
 
 /// Media sources one recording may create (the programme, ads, quality restarts): far more than a
 /// player needs.
@@ -66,24 +92,25 @@ impl Manager {
         let settings = self.settings();
         // The name chosen outside the list's lock (see `naming`).
         let naming = lock(&self.naming);
-        let taken = self.view(planned);
+        let mut taken = self.view(planned);
+        taken.extend(naming.iter().cloned());
         let target = unique_path(&settings.target_dir(&name), &name, &taken, None);
         let download = Download::recording(page, target.clone());
         let id = download.id;
         let mut entry = Entry::new(download, Vec::new(), 0, 0);
         entry.added = Some(Instant::now());
         lock(&self.entries).push(entry);
-        drop(naming);
         let token = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
-        let recording = Recording { id, target, parts: HashMap::new(), last_heard: Instant::now(), files: HashMap::new() };
+        let recording = Recording { id, target, parts: HashMap::new(), last_heard: Instant::now(), files: HashMap::new(), pending: Arc::default() };
         lock(&self.recordings).insert(token.clone(), recording);
+        drop(naming);
         self.changed();
         token
     }
 
     /// Appends a chunk of one track; `false` if the token is unknown (finished, cancelled, forged).
-    pub async fn record_append(&self, token: &str, ms: u32, track: Track, data: &[u8]) -> std::io::Result<bool> {
-        let (path, id, open) = {
+    pub async fn record_append(self: &Arc<Self>, token: &str, ms: u32, track: Track, data: &[u8]) -> std::io::Result<bool> {
+        let (path, id, file, _pending) = {
             let mut recordings = lock(&self.recordings);
             let Some(r) = recordings.get_mut(token) else { return Ok(false) };
             // A page creating media sources without end (a file each) is not a player: refused.
@@ -99,23 +126,19 @@ impl Manager {
             }
             r.last_heard = Instant::now();
             *r.parts.entry((ms, track)).or_default() += data.len() as u64;
-            (r.part(ms, track), r.id, r.files.get(&(ms, track)).cloned())
-        };
-        let file = match open {
-            Some(file) => file,
-            None => {
-                if let Some(dir) = path.parent() {
-                    tokio::fs::create_dir_all(dir).await?;
-                }
-                let file = tokio::fs::OpenOptions::new().create(true).append(true).open(&path).await?;
-                let mut recordings = lock(&self.recordings);
-                let Some(r) = recordings.get_mut(token) else { return Ok(false) }; // finished meanwhile
-                r.files.entry((ms, track)).or_insert_with(|| Arc::new(tokio::sync::Mutex::new(file))).clone()
-            }
+            let file = r.files.entry((ms, track)).or_default().clone();
+            (r.part(ms, track), r.id, file, PendingWrite::new(&r.pending))
         };
         {
             use tokio::io::AsyncWriteExt;
-            let mut file = file.lock().await;
+            let mut slot = file.lock().await;
+            if slot.is_none() {
+                if let Some(dir) = path.parent() {
+                    tokio::fs::create_dir_all(dir).await?;
+                }
+                *slot = Some(tokio::fs::OpenOptions::new().create(true).append(true).open(&path).await?);
+            }
+            let file = slot.as_mut().expect("opened above");
             file.write_all(data).await?;
             file.flush().await?; // on disk (the system's cache) before the next chunk or the merge
         }
@@ -124,6 +147,8 @@ impl Manager {
                 e.progress.downloaded.fetch_add(data.len() as u64, Relaxed);
             }
         });
+        drop(file);
+        drop(_pending);
         Ok(true)
     }
 
@@ -149,12 +174,11 @@ impl Manager {
 
     /// End of playback: mux the main programme's tracks into the target, then clean up.
     pub fn finish_recording(self: &Arc<Self>, token: &str) -> bool {
-        let Some(mut r) = lock(&self.recordings).remove(token) else { return false };
+        let Some(mut r) = self.take_recording(token) else { return false };
         let this = self.clone();
-        self.inflight.fetch_add(1, AcqRel); // quitting waits (bounded) for the merge
-        lock(&self.busy).insert(r.id); // so does removing it: its files are being written
-        self.rt.spawn_blocking(move || {
-            r.files.clear(); // closed before they are merged, then deleted
+        self.rt.spawn(async move {
+            r.drain().await;
+            tokio::task::spawn_blocking(move || {
             let result = match r.best_source() {
                 Some(ms) => engine::mux::merge(&r.part(ms, Track::Video), &r.part(ms, Track::Audio), &r.target)
                     .map_err(|e| Failure::Merge(e.to_string())),
@@ -187,21 +211,37 @@ impl Manager {
             {
                 notify::completed(&name);
             }
+            }).await.ok();
         });
         true
     }
 
     /// Stops a recording (cancelled in the page, idle, or removed): drops its partial data.
-    pub fn cancel_recording(&self, token: &str, why: Failure) -> bool {
-        let Some(mut r) = lock(&self.recordings).remove(token) else { return false };
-        r.files.clear(); // closed before they are deleted
-        for (ms, track) in r.parts.keys() {
-            let _ = fs::remove_file(r.part(*ms, *track));
-        }
+    pub fn cancel_recording(self: &Arc<Self>, token: &str, why: Failure) -> bool {
+        let Some(mut r) = self.take_recording(token) else { return false };
         self.update(r.id, |e| {
             let _ = e.download.fail(why);
         });
+        let this = self.clone();
+        self.rt.spawn(async move {
+            r.drain().await;
+            for (ms, track) in r.parts.keys() {
+                let _ = tokio::fs::remove_file(r.part(*ms, *track)).await;
+            }
+            lock(&this.busy).remove(&r.id);
+            this.inflight.fetch_sub(1, AcqRel);
+        });
         true
+    }
+
+    /// Remove the token and register the finishing task under one lock: removal of the entry
+    /// cannot observe neither an active recording nor a busy writer in between.
+    fn take_recording(&self, token: &str) -> Option<Recording> {
+        let mut recordings = lock(&self.recordings);
+        let recording = recordings.remove(token)?;
+        self.inflight.fetch_add(1, AcqRel);
+        lock(&self.busy).insert(recording.id);
+        Some(recording)
     }
 
     pub(super) fn token_of(&self, id: DownloadId) -> Option<String> {
@@ -209,7 +249,7 @@ impl Manager {
     }
 
     /// Recordings whose tab went silent (closed, navigated away) fail instead of hanging forever.
-    pub(super) fn reap_idle_recordings(&self) {
+    pub(super) fn reap_idle_recordings(self: &Arc<Self>) {
         let idle: Vec<String> = lock(&self.recordings)
             .iter()
             .filter(|(_, r)| r.last_heard.elapsed() > RECORDING_IDLE)
@@ -218,5 +258,30 @@ impl Manager {
         for token in idle {
             self.cancel_recording(&token, Failure::RecordingAbandoned);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn finishing_waits_for_registered_writes_even_before_the_file_is_open() {
+        let pending = Arc::new(AtomicUsize::new(0));
+        let mut recording = Recording {
+            id: DownloadId::new(),
+            target: PathBuf::from("unused.mp4"),
+            parts: HashMap::new(),
+            last_heard: Instant::now(),
+            files: HashMap::from([((0, Track::Video), PartFile::default())]),
+            pending: pending.clone(),
+        };
+        let write = PendingWrite::new(&pending);
+        assert!(tokio::time::timeout(Duration::from_millis(30), recording.drain()).await.is_err());
+        assert_eq!(recording.files.len(), 1, "the writer still owns its file slot");
+        drop(write);
+        tokio::time::timeout(Duration::from_secs(1), recording.drain()).await.unwrap();
+        assert!(recording.files.is_empty());
+        assert_eq!(pending.load(Acquire), 0);
     }
 }

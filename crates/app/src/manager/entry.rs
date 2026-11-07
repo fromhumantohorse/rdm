@@ -211,6 +211,11 @@ impl Entry {
         })
     }
 
+    /// Finished: the session's secrets have no use left (a long history would keep them all).
+    pub(super) fn forget_secrets(&mut self) {
+        self.headers.retain(|(k, _)| !SECRET_HEADERS.contains(&k.as_str()));
+    }
+
     /// What goes to disk: never the session secrets.
     pub(super) fn stored(&self) -> Stored {
         let (downloaded, total, _) = self.progress.snapshot();
@@ -267,10 +272,12 @@ fn restore(saved: serde_json::Value) -> Option<Entry> {
     Some(entry)
 }
 
+/// By their bytes: a cookie may hold UTF-8, as browsers send it. Taken for plain ASCII, the whole
+/// header would be dropped, and a protected link answer 403.
 pub(super) fn to_header_map(pairs: &[(String, String)]) -> HeaderMap {
     pairs
         .iter()
-        .filter_map(|(k, v)| Some((HeaderName::from_bytes(k.as_bytes()).ok()?, HeaderValue::from_str(v).ok()?)))
+        .filter_map(|(k, v)| Some((HeaderName::from_bytes(k.as_bytes()).ok()?, HeaderValue::from_bytes(v.as_bytes()).ok()?)))
         .collect()
 }
 
@@ -291,6 +298,27 @@ mod tests {
         assert!(restore(saved(PathBuf::from("a.zip"), None)).is_none(), "relative: it would follow the working folder");
         assert!(restore(saved(folder_only, None)).is_none(), "a root: removing it would delete that path");
         assert!(restore(saved(std::env::temp_dir().join("a.zip"), None)).is_some());
+    }
+
+    #[test]
+    fn a_cookie_holding_utf8_is_sent_as_the_browser_sent_it() {
+        let pairs = [("cookie".to_owned(), "name=Zoé".to_owned()), ("bad\nname".to_owned(), "x".to_owned())];
+
+        let headers = to_header_map(&pairs);
+
+        assert_eq!(headers.get("cookie").unwrap().as_bytes(), "name=Zoé".as_bytes());
+        assert_eq!(headers.len(), 1, "what no server could read is left out");
+    }
+
+    #[test]
+    fn a_finished_download_keeps_no_session_secret() {
+        let download = Download::new("https://x.io/a.zip".parse().unwrap(), std::env::temp_dir().join("a.zip"), 8);
+        let headers = vec![("cookie".to_owned(), "sid=1".to_owned()), ("referer".to_owned(), "https://x.io/".to_owned())];
+        let mut entry = Entry::new(download, headers, 0, 0);
+
+        entry.forget_secrets();
+
+        assert_eq!(entry.headers, [("referer".to_owned(), "https://x.io/".to_owned())]);
     }
 
     #[test]

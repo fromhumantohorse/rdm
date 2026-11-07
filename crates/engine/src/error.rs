@@ -10,6 +10,8 @@ pub enum EngineError {
     Io(#[from] std::io::Error),
     #[error("server ignored range request")]
     RangeIgnored,
+    #[error("file changed on the server during the download")]
+    FileChanged,
     #[error("server sent no data")]
     Empty,
     #[error("connection closed before the end")]
@@ -65,7 +67,7 @@ impl EngineError {
                     || self.is_certificate()
                     || net::is_lan_blocked(e)
             }
-            Self::Io(_) | Self::Empty | Self::LocalNetwork | Self::Playlist(_) | Self::Mux(_) => true,
+            Self::Io(_) | Self::Empty | Self::FileChanged | Self::LocalNetwork | Self::Playlist(_) | Self::Mux(_) => true,
             Self::RangeIgnored | Self::Truncated | Self::Stalled => false,
         }
     }

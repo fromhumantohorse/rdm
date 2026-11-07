@@ -162,6 +162,8 @@
     }
     let hit = cache.get(videoId);
     if (!hit || Date.now() - hit.at > CACHE_MS) {
+      // A tab can stay open for days: what is past its time goes, not only this video's.
+      for (const [id, { at }] of cache) if (Date.now() - at > CACHE_MS) cache.delete(id);
       hit = { at: Date.now(), promise: resolve(videoId) };
       cache.set(videoId, hit);
     }

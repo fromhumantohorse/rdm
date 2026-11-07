@@ -17,6 +17,7 @@ const NAMES: &[(&str, &str)] = &[
     ("mullvad", "mullvad"),
     ("zen", "zen"),
     ("firefox", "firefox"),
+    ("safari", "safari"),
     // macOS names them in full (`Google Chrome.app/Contents/MacOS/Google Chrome`).
     ("google chrome", "chrome"),
     ("microsoft edge", "edge"),
@@ -38,7 +39,7 @@ pub(crate) fn key_of_exe(path: &str) -> Option<&'static str> {
     })
 }
 
-/// The keys of the browsers running now.
+/// The keys of the browsers the user has open now.
 pub fn running() -> HashSet<&'static str> {
     imp::executables().iter().filter_map(|exe| key_of_exe(exe)).collect()
 }
@@ -58,13 +59,42 @@ mod imp {
 
 #[cfg(windows)]
 mod imp {
-    use windows_sys::Win32::{
-        Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
-        System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS},
+    use std::collections::HashSet;
+
+    use windows_sys::{
+        Win32::{
+            Foundation::{CloseHandle, HWND, INVALID_HANDLE_VALUE, LPARAM},
+            System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS},
+            UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId, IsWindowVisible},
+        },
+        core::BOOL,
     };
 
-    /// The executable file name of every process (`chrome.exe`…).
+    /// The processes with a window on this session's screen. A browser without one was not opened
+    /// by the user: Edge's "startup boost" or Chrome's background apps, there from the login on
+    /// (and no other session's browser either).
+    fn with_a_window() -> HashSet<u32> {
+        unsafe extern "system" fn add(window: HWND, found: LPARAM) -> BOOL {
+            // SAFETY: `found` points to the set below, alive for the whole enumeration; the rest are
+            // plain queries on a window handle the system just gave.
+            unsafe {
+                if IsWindowVisible(window) != 0 {
+                    let mut pid = 0u32;
+                    GetWindowThreadProcessId(window, &mut pid);
+                    (*(found as *mut HashSet<u32>)).insert(pid);
+                }
+            }
+            1
+        }
+        let mut found = HashSet::new();
+        // SAFETY: the callback above; `found` outlives the call, which returns once all were seen.
+        unsafe { EnumWindows(Some(add), (&raw mut found) as LPARAM) };
+        found
+    }
+
+    /// The executable file name of every process with a window (`chrome.exe`…).
     pub fn executables() -> Vec<String> {
+        let windowed = with_a_window();
         let mut names = Vec::new();
         // SAFETY: a snapshot handle, closed below; the entry's size is set as the API requires.
         unsafe {
@@ -76,8 +106,10 @@ mod imp {
             entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
             let mut more = Process32FirstW(snapshot, &mut entry) != 0;
             while more {
-                let len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len());
-                names.push(String::from_utf16_lossy(&entry.szExeFile[..len]));
+                if windowed.contains(&entry.th32ProcessID) {
+                    let len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len());
+                    names.push(String::from_utf16_lossy(&entry.szExeFile[..len]));
+                }
                 more = Process32NextW(snapshot, &mut entry) != 0;
             }
             CloseHandle(snapshot);
@@ -138,6 +170,7 @@ mod tests {
             ("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge", "edge"),
             ("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser", "brave"),
             ("/Applications/Firefox.app/Contents/MacOS/firefox", "firefox"),
+            ("/Applications/Safari.app/Contents/MacOS/Safari", "safari"),
         ] {
             assert_eq!(key_of_exe(exe), Some(key), "{exe}");
         }

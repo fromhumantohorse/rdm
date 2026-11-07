@@ -1055,6 +1055,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
@@ -3064,6 +3065,7 @@ version = "0.3.14"
 dependencies = [
  "arboard",
  "axum",
+ "block2 0.6.2",
  "directories",
  "domain",
  "ed25519-dalek",

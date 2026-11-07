@@ -12,9 +12,13 @@
   const YT_TIMEOUT = 20_000;
   const onYouTube = /(^|\.)youtube(-nocookie)?\.com$/.test(location.hostname);
 
-  const host = document.createElement("rdm-overlay");
-  const root = host.attachShadow({ mode: "closed" });
-  root.innerHTML = `
+  // Built when first shown: most pages and frames (ads, widgets) never need any of it.
+  let host, btn, menu, label;
+  function buildOverlay() {
+    if (host) return;
+    host = document.createElement("rdm-overlay");
+    const root = host.attachShadow({ mode: "closed" });
+    root.innerHTML = `
     <style>
       :host { all: initial; position: fixed; z-index: 2147483647; display: none;
               font: 13px/1.4 Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
@@ -48,13 +52,22 @@
       stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11"/><path d="m7 11 5 5 5-5"/><path d="M5 20h14"/></svg>
       <span></span></button>
     <ul class="menu" hidden></ul>`;
-  const btn = root.querySelector(".btn");
-  const menu = root.querySelector(".menu");
-  const label = btn.querySelector("span");
-  // RDM's "Mini download button" setting, cached by the service worker (see `appConfig`).
-  const setMini = (on) => btn.classList.toggle("mini", on === true);
-  ext.storage.local.get("mini").then(({ mini }) => setMini(mini), () => {});
-  ext.storage.onChanged.addListener((changes, area) => area === "local" && "mini" in changes && setMini(changes.mini.newValue));
+    btn = root.querySelector(".btn");
+    menu = root.querySelector(".menu");
+    label = btn.querySelector("span");
+    // RDM's "Mini download button" setting, cached by the service worker (see `appConfig`).
+    const setMini = (on) => btn.classList.toggle("mini", on === true);
+    ext.storage.local.get("mini").then(({ mini }) => setMini(mini), () => {});
+    ext.storage.onChanged.addListener((changes, area) => area === "local" && "mini" in changes && setMini(changes.mini.newValue));
+    host.addEventListener("pointerenter", () => clearTimeout(hideTimer));
+    host.addEventListener("pointerleave", scheduleHide);
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (menu.hidden) openMenu();
+      else menu.hidden = true;
+    });
+    document.addEventListener("click", (e) => e.composedPath().includes(host) || (menu.hidden = true), true);
+  }
 
   let target = null;
   let hideTimer = 0;
@@ -395,7 +408,11 @@
       text.textContent = message;
       cancel.remove();
       bar.classList.toggle("done", ok);
-      setTimeout(() => banner.remove(), ok ? 8000 : 15000);
+      // The relay goes too, what it was still sending done by then: nothing stays behind in the tab.
+      setTimeout(() => {
+        banner.remove();
+        relay.remove();
+      }, ok ? 8000 : 15000);
     };
 
     addEventListener("message", (e) => {
@@ -562,6 +579,7 @@
   }
 
   function showButton(el) {
+    buildOverlay();
     clearTimeout(hideTimer);
     const container = document.fullscreenElement?.tagName === "VIDEO" ? null : document.fullscreenElement;
     const parent = container ?? document.documentElement;
@@ -628,14 +646,6 @@
 
   addEventListener("scroll", () => target && place(), { passive: true, capture: true });
   addEventListener("resize", () => target && place(), { passive: true });
-  host.addEventListener("pointerenter", () => clearTimeout(hideTimer));
-  host.addEventListener("pointerleave", scheduleHide);
-  btn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    if (menu.hidden) openMenu();
-    else menu.hidden = true;
-  });
-  document.addEventListener("click", (e) => e.composedPath().includes(host) || (menu.hidden = true), true);
 
   // ── Toasts: what happened to a download handed to RDM (top frame only) ──
   let toastEl = null;
@@ -665,9 +675,37 @@
   ext.runtime.onMessage.addListener((msg) => {
     if (msg?.kind === "media-changed") {
       if (msg.model) hasModels = true;
-      if (!menu.hidden && view === "generic" && !msg.model) genericMenu();
-      if (!menu.hidden && view === "model" && msg.model) modelMenu();
+      if (menu?.hidden === false && view === "generic" && !msg.model) genericMenu();
+      if (menu?.hidden === false && view === "model" && msg.model) modelMenu();
     }
     if (msg?.kind === "toast") toast(msg.text);
   });
+
+  // ── Safari: no downloads API, so the clicks on links to captured types come to RDM from here ──
+  if (!ext.runtime.getManifest().permissions?.includes("downloads")) {
+    let types = new Set();
+    const setTypes = (list) => (types = new Set((list ?? "").toLowerCase().split(/[\s,;.]+/).filter(Boolean)));
+    ext.storage.local.get("links").then(({ links }) => setTypes(links), () => {});
+    ext.storage.onChanged.addListener((changes, area) => area === "local" && "links" in changes && setTypes(changes.links.newValue));
+    // Mirrors `isCapturable` in shared.js (content scripts are not modules).
+    const wanted = (name) => {
+      const type = /\.([^./\\]+)$/.exec(name)?.[1].toLowerCase() ?? "";
+      return types.has(type) || /^([rz]\d{1,3}|\d{3})$/.test(type);
+    };
+    document.addEventListener(
+      "click",
+      (e) => {
+        if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+        const link = e.composedPath().find((n) => n.tagName === "A" && isHttp(n.href));
+        if (!link || !wanted(link.download || new URL(link.href).pathname)) return;
+        e.preventDefault();
+        const { href, download } = link;
+        send({ kind: "download", url: href, filename: download || undefined }).then((sent) => {
+          if (sent === true) toast(t("sentName", download || nameOf(href)));
+          else location.href = href; // RDM absent or refusing: Safari downloads it, as always
+        });
+      },
+      true,
+    );
+  }
 })();

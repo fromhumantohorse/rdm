@@ -55,7 +55,7 @@ pub(super) fn same_file(a: &Path, b: &Path) -> bool {
     matches!((norm(a), norm(b)), (Ok(a), Ok(b)) if a == b)
 }
 
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
 fn detect() -> Method {
     let Some(exe) = startup_exe() else { return Method::Manual };
     let succeeds = |program: &str, args: &[&std::ffi::OsStr]| {
@@ -79,7 +79,7 @@ fn detect() -> Method {
     if writable(exe) { Method::Binary } else { Method::Manual }
 }
 
-#[cfg(not(any(windows, all(target_os = "linux", target_arch = "x86_64"))))]
+#[cfg(not(any(windows, all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))))]
 fn detect() -> Method {
     Method::Manual
 }

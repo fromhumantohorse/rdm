@@ -39,6 +39,8 @@ struct Faults {
     straggler_every: usize,
     /// At most this many requests per second, then 429 with `Retry-After: 1` (0 = no limit).
     per_second: usize,
+    /// Any request with a `Range` header gets 416, the plain one the file.
+    refuse_ranges: bool,
 }
 
 struct Server {
@@ -114,6 +116,10 @@ async fn handle(
             socket.write_all(b"HTTP/1.1 429 Too Many Requests\r\nretry-after: 1\r\ncontent-length: 0\r\n\r\n").await?;
             continue;
         }
+        if faults.refuse_ranges && text.lines().any(|l| l.starts_with("range:")) {
+            socket.write_all(b"HTTP/1.1 416 Range Not Satisfiable\r\ncontent-length: 0\r\n\r\n").await?;
+            continue;
+        }
         let range = text.lines().find_map(|l| l.strip_prefix("range: bytes=")).map(|r| {
             let (a, b) = r.trim().split_once('-').unwrap();
             let a: usize = a.parse().unwrap();
@@ -184,6 +190,16 @@ fn assert_intact(path: &PathBuf) {
 async fn survives_connections_cut_mid_transfer() {
     let server = serve(Arc::new(Faults { cut_every: 3, ..Faults::default() })).await;
     let (result, path) = download(server.url, target("cut"), 16).await;
+    assert_eq!(result.unwrap(), Outcome::Completed);
+    assert_intact(&path);
+}
+
+/// Regression: a server answering an error to any `Range` failed the download, though it serves the
+/// file to a plain request.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_server_refusing_ranges_still_gives_the_file() {
+    let server = serve(Arc::new(Faults { refuse_ranges: true, ..Faults::default() })).await;
+    let (result, path) = download(server.url, target("no-range"), 16).await;
     assert_eq!(result.unwrap(), Outcome::Completed);
     assert_intact(&path);
 }

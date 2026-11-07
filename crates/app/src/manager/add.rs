@@ -194,11 +194,12 @@ impl Manager {
         // The disk is looked at with only the naming lock held (see `naming`); the list is read,
         // then written, in short steps around it.
         let naming = lock(&self.naming);
-        let Some((current, status, taken)) =
+        let Some((current, status, mut taken)) =
             self.view(|es| es.iter().find(|e| e.download.id == id).map(|e| (e.name.clone(), e.download.status().clone(), planned(es))))
         else {
             return;
         };
+        taken.extend(naming.iter().cloned());
         // Its name known at last (a pasted or copied link): a file of that name already there is
         // the user's to decide, before anything is written (`ExistingFile::Ask`).
         let final_name = name.clone().unwrap_or_else(|| current.clone());
@@ -273,7 +274,7 @@ impl Manager {
         }
         // One name chosen at a time, the disk looked at outside the list's lock (see `naming`).
         let naming = lock(&self.naming);
-        let taken = {
+        let mut taken = {
             let entries = lock(&self.entries);
             let twice = entries.iter().rev().take_while(|e| e.added.is_some_and(|t| t.elapsed() < DUPLICATE_WINDOW)).any(|e| {
                 e.download.url == url && e.download.audio == audio && !matches!(e.download.status(), Status::Failed(_))
@@ -283,6 +284,7 @@ impl Manager {
             }
             planned(&entries)
         };
+        taken.extend(naming.iter().cloned());
         // A name already known (the page gave it): an existing file may mean "skip".
         let target = if resolving {
             unique_path(&settings.target_dir(name), name, &taken, None)

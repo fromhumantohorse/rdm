@@ -19,6 +19,8 @@ pub struct Secrets {
     pub proxy_password: String,
     /// The user's own (free) VirusTotal API key; empty = not set up.
     pub virustotal_key: String,
+    /// What Safari's extension shows RDM once approved: its origin changes at each launch of Safari.
+    pub safari_pair: String,
 }
 
 /// HTTP login for a site: sent (Basic) to `host` and its subdomains.

@@ -49,13 +49,7 @@ pub(super) async fn worker(ctx: Arc<Ctx>, mut slot: Arc<Slot>, mut active: Activ
 
 /// `Ok(true)`: the piece is done (or the download stopped). `Ok(false)`: this connection failed
 /// while others keep going; the piece was handed back to them.
-async fn fetch_with_retry(
-    ctx: &Ctx,
-    slot: &mut Arc<Slot>,
-    active: &mut Active,
-    mut followed: bool,
-    first: &mut Option<Response>,
-) -> Result<bool, EngineError> {
+async fn fetch_with_retry(ctx: &Ctx, slot: &mut Arc<Slot>, active: &mut Active, mut followed: bool, first: &mut Option<Response>) -> Result<bool, EngineError> {
     let (mut attempt, mut restarts, mut replaced) = (0u32, 0u32, false);
     loop {
         // A server counting requests: none before the time it said (`Retry-After`).
@@ -178,9 +172,18 @@ async fn fetch(ctx: &Ctx, slot: &Slot, followed: bool, answered: Option<Response
     // size: a mirror serving a newer release), would silently corrupt the file. A 200 is the whole
     // file: right only when the whole file was asked for (RFC 9110 lets a server answer that way).
     let whole_file = pos == 0 && ctx.size.is_some_and(|size| asked.checked_add(1) == Some(size));
+    if let (Some(expected), Some(actual)) = (ctx.version.as_deref(), crate::probe::version_of(res.headers()))
+        && expected
+            .split_once(':')
+            .zip(actual.split_once(':'))
+            .is_some_and(|((kind, value), (other_kind, other_value))| kind == other_kind && value != other_value)
+    {
+        return Err(EngineError::FileChanged);
+    }
+    let received_range = crate::content_range(res.headers());
     let fits = match res.status() {
-        StatusCode::PARTIAL_CONTENT => crate::content_range(res.headers()).is_some_and(|(start, total)| {
-            start == pos && total.is_none_or(|total| Some(total) == ctx.size)
+        StatusCode::PARTIAL_CONTENT => received_range.is_some_and(|(start, end, total)| {
+            start == pos && end <= asked && total.is_none_or(|total| Some(total) == ctx.size) && res.content_length().is_none_or(|len| len == end - start + 1)
         }),
         // Its length too: a server answering with another version of the file (another size) would
         // not fit.
@@ -191,6 +194,8 @@ async fn fetch(ctx: &Ctx, slot: &Slot, followed: bool, answered: Option<Response
         return Err(EngineError::RangeIgnored);
     }
     let _receiving = Counted::enter(&ctx.streaming);
+    let response_len = (res.status() == StatusCode::PARTIAL_CONTENT).then_some(received_range).flatten().map(|(start, end, _)| end - start + 1);
+    let mut received = 0u64;
 
     let mut stream = res.bytes_stream();
     // Grows with the connection's speed up to its share: slow connections (flushed every few
@@ -215,6 +220,10 @@ async fn fetch(ctx: &Ctx, slot: &Slot, followed: bool, answered: Option<Response
             Some(Err(e)) => break Err(EngineError::from(e)),
             None => break Ok(true),
         };
+        received = received.saturating_add(chunk.len() as u64);
+        if response_len.is_some_and(|len| received > len) {
+            break Err(EngineError::RangeIgnored);
+        }
         // What fits in this piece — for an open request, running on into the next free pieces.
         let (mut rest, mut taken, mut over) = (&chunk[..], 0, false);
         while !rest.is_empty() {
@@ -283,6 +292,7 @@ async fn fetch(ctx: &Ctx, slot: &Slot, followed: bool, answered: Option<Response
         // Unknown length: the end of the stream is the end of the file.
         (true, false, None) => {
             slot.end.store(written - 1, Release);
+            ctx.progress.total.store(written, Relaxed);
             Ok(())
         }
         // Known length: stopping short is a truncated file, never a success.

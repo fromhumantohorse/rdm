@@ -58,6 +58,7 @@ struct Ctx {
     slots: Slots,
     ranges: bool,
     size: Option<u64>,
+    version: Option<String>,
     stop: CancellationToken,
     progress: Arc<Progress>,
     limit: Arc<RateLimit>,
@@ -69,12 +70,7 @@ struct Ctx {
     buf: usize,
 }
 
-pub(crate) async fn run(
-    client: &Client,
-    job: &Job,
-    progress: Arc<Progress>,
-    cancel: CancellationToken,
-) -> Result<Outcome, EngineError> {
+pub(crate) async fn run(client: &Client, job: &Job, progress: Arc<Progress>, cancel: CancellationToken) -> Result<Outcome, EngineError> {
     let state = state_path(&job.target);
     let pace = Pace::new(usize::from(job.connections), host_key(&job.url));
     // The server asked a recent download to come back later (`Retry-After`): not before.
@@ -138,6 +134,7 @@ pub(crate) async fn run(
         slots: Slots::new(segments),
         ranges: info.ranges,
         size: info.size,
+        version: info.version.clone(),
         stop: cancel.child_token(),
         progress,
         limit: job.limit.clone(),
@@ -184,7 +181,7 @@ pub(crate) async fn run(
             }
             // A crash, a kill or a session closing mid-download loses at most this much.
             _ = checkpoint.tick(), if info.ranges => {
-                let _ = persist(&job.target, &state, info.version.as_deref(), &compact(ctx.slots.segments())).await;
+                let _ = persist(&ctx.disk, &state, info.version.as_deref(), &compact(ctx.slots.segments())).await;
             }
             _ = show.tick(), if info.ranges => ctx.progress.set_pieces(compact(ctx.slots.segments())),
             // More connections while they help: waiting pieces first, then parts of the piece
@@ -211,14 +208,14 @@ pub(crate) async fn run(
     if done && failure.is_none() {
         // On disk before its resume point goes: a power cut must not leave a file "complete" with
         // holes in it, and nothing saying so.
-        fs::OpenOptions::new().write(true).open(&job.target).await?.sync_data().await?;
+        ctx.disk.sync().await?;
         let _ = fs::remove_file(&state).await;
         ctx.progress.downloaded.store(ctx.progress.total.load(Relaxed), Relaxed);
         return Ok(Outcome::Completed);
     }
     // The data must be on disk before a state file claims it is: a power cut must not leave a
     // resume point ahead of the bytes actually stored.
-    let saved = if info.ranges { persist(&job.target, &state, info.version.as_deref(), &compact(ctx.slots.segments())).await } else { Ok(()) };
+    let saved = if info.ranges { persist(&ctx.disk, &state, info.version.as_deref(), &compact(ctx.slots.segments())).await } else { Ok(()) };
     match failure {
         Some(e) => Err(e), // the real cause wins over a secondary save error
         None => {

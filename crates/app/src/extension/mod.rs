@@ -1,15 +1,19 @@
 //! The browser extension, bundled in the executable. RDM writes it to a stable folder the browsers
-//! load it from — Chrome, Brave, Opera, Edge, Chromium: "load unpacked"; Firefox: the signed
-//! package of the GitHub release when there is one, a temporary add-on otherwise; Waterfox (a
-//! Firefox derivative that can accept unsigned packages): the package itself — rewrites that copy
-//! when a newer RDM brings a newer extension, and opens each browser where the user confirms.
+//! load it from — Chrome, Brave, Opera, Edge, Chromium: the Chrome Web Store's page when it lists
+//! the extension, "load unpacked" otherwise; Firefox: the signed package of the GitHub release when
+//! there is one, a temporary add-on otherwise; Waterfox (a Firefox derivative that can accept
+//! unsigned packages): the package itself; Safari: the app extension inside RDM.app, its settings
+//! opened — rewrites that copy when a newer RDM brings a newer extension, and opens each browser
+//! where the user confirms.
 
 mod browser;
 mod running;
 
-use std::{borrow::Cow, fs, io, path::PathBuf};
+use std::{borrow::Cow, io, path::PathBuf};
 
-pub use browser::{Browser, Flavour, installed, launch};
+use crate::settings::write_if_changed;
+
+pub use browser::{Browser, Flavour, default_browser, installed, launch, open_safari_settings};
 pub(crate) use browser::valid_key;
 pub use running::running;
 
@@ -20,6 +24,7 @@ impl Flavour {
         match self {
             Self::Chromium => "chromium",
             Self::Firefox => "firefox",
+            Self::Safari => "safari",
         }
     }
 }
@@ -43,6 +48,11 @@ pub fn base() -> PathBuf {
 /// The folder a browser loads the unpacked extension from.
 pub fn folder(flavour: Flavour) -> PathBuf {
     base().join(flavour.dir_name())
+}
+
+/// The extension's page in the Chrome Web Store: there, the browser itself asks to add it.
+pub fn store_page() -> String {
+    format!("https://chromewebstore.google.com/detail/{}", crate::bridge::STORE_EXTENSION_ORIGIN.trim_start_matches("chrome-extension://"))
 }
 
 /// The extension's files for `flavour`: identical except the Firefox manifest.
@@ -94,16 +104,7 @@ pub fn version() -> &'static str {
 pub fn write(flavour: Flavour) -> io::Result<PathBuf> {
     let dir = folder(flavour);
     for (name, bytes) in files(flavour) {
-        let path = dir.join(name);
-        if fs::read(&path).is_ok_and(|old| old == *bytes) {
-            continue;
-        }
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let tmp = crate::settings::with_suffix(&path, ".tmp");
-        fs::write(&tmp, &bytes)?;
-        fs::rename(tmp, path)?;
+        write_if_changed(&dir.join(name), &bytes)?;
     }
     Ok(dir)
 }
@@ -128,15 +129,8 @@ const XPI: &str = "rdm-firefox.xpi";
 /// LibreWolf; release Firefox only installs signed packages.
 pub fn write_xpi() -> io::Result<PathBuf> {
     let path = base().join(XPI);
-    fs::create_dir_all(base())?;
     let files = files(Flavour::Firefox);
-    let bytes = zip(files.iter().map(|(n, b)| (*n, b.as_ref())));
-    if fs::read(&path).is_ok_and(|old| old == bytes) {
-        return Ok(path);
-    }
-    let tmp = crate::settings::with_suffix(&path, ".tmp");
-    fs::write(&tmp, bytes)?;
-    fs::rename(tmp, &path)?;
+    write_if_changed(&path, &zip(files.iter().map(|(n, b)| (*n, b.as_ref()))))?;
     Ok(path)
 }
 

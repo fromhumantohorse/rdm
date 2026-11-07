@@ -30,6 +30,7 @@ impl Manager {
 
     /// Removes from the list; `delete_file` also erases the file (always for unfinished parts).
     pub fn remove(self: &Arc<Self>, id: DownloadId, delete_file: bool) {
+        let mut naming = lock(&self.naming);
         if let Some(token) = self.token_of(id) {
             self.cancel_recording(&token, Failure::RecordingCancelled);
         }
@@ -37,6 +38,12 @@ impl Manager {
             let mut entries = lock(&self.entries);
             entries.iter().position(|e| e.download.id == id).map(|i| entries.remove(i))
         };
+        if let Some(e) = &removed
+            && (delete_file || *e.download.status() != Status::Completed)
+        {
+            naming.push(files::reserved(e));
+        }
+        drop(naming);
         if let Some(e) = removed {
             if let Some(cancel) = &e.cancel {
                 cancel.cancel();
@@ -45,15 +52,16 @@ impl Manager {
                 let this = self.clone();
                 let (target, replaces) = (e.download.target.clone(), e.replaces);
                 self.rt.spawn(async move {
-                    // Wait for the task to stop writing (bounded), then clean up.
-                    let deadline = Instant::now() + Duration::from_secs(10);
-                    while lock(&this.busy).contains(&id) && Instant::now() < deadline {
+                    // Cancellation can take longer than a network timeout or a slow disk write.
+                    // Never erase under a live writer, nor let a new entry reuse its name.
+                    while lock(&this.busy).contains(&id) {
                         tokio::time::sleep(Duration::from_millis(50)).await;
                     }
                     for path in leftovers(&target, delete_file, replaces) {
                         let _ = tokio::fs::remove_file(path).await;
                     }
                     remove_recording_leftovers(&target).await;
+                    lock(&this.naming).retain(|entry| entry.id != id);
                 });
             }
         }

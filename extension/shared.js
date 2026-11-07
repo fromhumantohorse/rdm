@@ -33,12 +33,8 @@ const pathOf = (url) => {
   }
 };
 
-export const isHls = (url, type = "") => extOf(pathOf(url)) === "m3u8" || /mpegurl/i.test(type);
-
-export const isMediaUrl = (url) => MEDIA_EXTENSIONS.has(extOf(pathOf(url)));
-
 // MPEG-TS fragments and DASH manifests are pieces of a stream, not standalone media.
-export const isMediaType = (type = "") => /^(video|audio)\//i.test(type) && !/mp2t|mpegurl|dash/i.test(type);
+const isMediaType = (type) => /^(video|audio)\//i.test(type) && !/mp2t|mpegurl|dash/i.test(type);
 
 // 3D models: interchange formats, DCC scenes, CAD, point clouds and Gaussian splats.
 const MODEL_EXTENSIONS = new Set(
@@ -49,13 +45,23 @@ const MODEL_EXTENSIONS = new Set(
 // Viewers' own formats: Sketchfab (`file.osgjs.gz`, `model_file.binz`, not the wireframe overlay).
 const VIEWER_MODEL = /(\.osgjs(\.gz)?|\/model_file(?!_wireframe)[^/]*\.(binz|bin(\.gz)?))$/i;
 
-export const isModelUrl = (url) => {
+const isModelType = (type) =>
+  /^model\//i.test(type) || /^application\/(sla|vnd\.ms-pki\.stl|x-tgif|x-3ds|x-blender|vnd\.collada\+xml)\b/i.test(type);
+
+/**
+ * What a network response is worth to the user: "hls", "model", "media" or "". Asked for every XHR
+ * of every tab: its address is read once.
+ */
+export const kindOf = (url, type = "") => {
   const path = pathOf(url);
-  return MODEL_EXTENSIONS.has(extOf(path)) || VIEWER_MODEL.test(path);
+  const ext = extOf(path);
+  if (ext === "m3u8" || /mpegurl/i.test(type)) return "hls";
+  if (MODEL_EXTENSIONS.has(ext) || VIEWER_MODEL.test(path) || isModelType(type)) return "model";
+  return isMediaType(type) || MEDIA_EXTENSIONS.has(ext) ? "media" : "";
 };
 
-export const isModelType = (type = "") =>
-  /^model\//i.test(type) || /^application\/(sla|vnd\.ms-pki\.stl|x-tgif|x-3ds|x-blender|vnd\.collada\+xml)\b/i.test(type);
+/** Safari, whatever its version: every other browser says "Chrome" or "Firefox" in its User-Agent. */
+export const isSafari = (ua = "") => /\bVersion\/[\d.]+.*\bSafari\//.test(ua) && !/\b(Chrome|Chromium|Firefox|Edg|OPR)\//.test(ua);
 
 // Same lists as RDM's `engine/src/net.rs`: second levels a country's registry hands out
 // (`co.uk`, `ne.jp`), and hosting platforms whose subdomains belong to different people.
@@ -75,6 +81,8 @@ const SHARED_HOSTS = (
 export const siteOf = (url) => {
   try {
     const host = new URL(url).hostname.replace(/\.$/, "");
+    // IP addresses have no registrable domain: 127.0.0.1 and 10.0.0.1 are different sites.
+    if (host.startsWith("[") || /^\d+(?:\.\d+){3}$/.test(host)) return host;
     const labels = host.split(".");
     const [second = "", tld = ""] = labels.slice(-2);
     const shared = SHARED_HOSTS.find((s) => host.endsWith(`.${s}`));
@@ -83,6 +91,17 @@ export const siteOf = (url) => {
     return labels.slice(-(suffix + 1)).join(".");
   } catch {
     return "";
+  }
+};
+
+/** SameSite is schemeful: an HTTP page is not the same site as its HTTPS counterpart. */
+export const sameSite = (a, b) => {
+  try {
+    const first = new URL(a);
+    const second = new URL(b);
+    return /^https?:$/.test(first.protocol) && first.protocol === second.protocol && siteOf(a) === siteOf(b);
+  } catch {
+    return false;
   }
 };
 

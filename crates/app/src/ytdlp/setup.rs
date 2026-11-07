@@ -20,24 +20,32 @@ const BGUTIL_PLUGIN_SHA256: &str = "bce874dfa25896c2798e0f4f8147b7b22e785479eb1e
 const BGUTIL_SOURCE_SHA256: &str = "e95324ee24b1b0f1b4ad43d336343afe7cf1914acdf65d9cc1977f51d7b137c2";
 const BGUTIL_SOURCE_URL: &str = "https://codeload.github.com/Brainicism/bgutil-ytdlp-pot-provider/zip/refs/tags/2.0.0";
 
-#[cfg(windows)]
+#[cfg(all(windows, not(target_arch = "aarch64")))]
 pub(super) const YTDLP_ASSET: &str = "yt-dlp.exe";
+#[cfg(all(windows, target_arch = "aarch64"))]
+pub(super) const YTDLP_ASSET: &str = "yt-dlp_arm64.exe";
 #[cfg(target_os = "macos")]
 pub(super) const YTDLP_ASSET: &str = "yt-dlp_macos";
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "aarch64")))]
 pub(super) const YTDLP_ASSET: &str = "yt-dlp_linux";
+#[cfg(all(unix, not(target_os = "macos"), target_arch = "aarch64"))]
+pub(super) const YTDLP_ASSET: &str = "yt-dlp_linux_aarch64";
 /// yt-dlp's checksum list, and its detached signature.
 const YTDLP_SUMS: &str = "SHA2-256SUMS";
 
 /// Deno is pinned: it runs bgutil's code, and needs no update to follow YouTube.
 const DENO_VERSION: &str = "2.9.7";
+// Windows on ARM too: x64 Deno, emulated by Windows 11 — it must load the library below, which
+// `canvas` does not publish for ARM on Windows.
 #[cfg(windows)]
 const DENO_ASSET: (&str, &str) = ("deno-x86_64-pc-windows-msvc.zip", "a0c3101b4158d1dfb7d6a78a7bf0f3de80c96bb423c152beec8beb22786f2238");
 // shortcut: Apple Silicon only (what RDM ships for macOS), add the x86_64 archives if it ever builds for Intel Macs.
 #[cfg(target_os = "macos")]
 const DENO_ASSET: (&str, &str) = ("deno-aarch64-apple-darwin.zip", "5cd46d6268f6f78f5d88bdc7159d20bd44cdaa4b3303474839f87ec6fe7ae25c");
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "aarch64")))]
 const DENO_ASSET: (&str, &str) = ("deno-x86_64-unknown-linux-gnu.zip", "c6527f24f4b16031d3ae4fa9f658d5f11534c8d84ce7dc8502420280919c3490");
+#[cfg(all(unix, not(target_os = "macos"), target_arch = "aarch64"))]
+const DENO_ASSET: (&str, &str) = ("deno-aarch64-unknown-linux-gnu.zip", "c832298b1ad4422481334855f6003e0f54145762c5a134f20a489511d2f65bbf");
 
 /// The native drawing library bgutil uses (through its `canvas` package), as its own release
 /// publishes it; unpacked over the package in place of its install script.
@@ -46,8 +54,10 @@ const CANVAS_VERSION: &str = "3.2.3";
 const CANVAS_ASSET: (&str, &str) = ("canvas-v3.2.3-napi-v7-win32-x64.tar.gz", "ba953cc8c38303ab94cc83461c7561506a5a3af37d6c678de4a47914d2d0bb48");
 #[cfg(target_os = "macos")]
 const CANVAS_ASSET: (&str, &str) = ("canvas-v3.2.3-napi-v7-darwin-arm64.tar.gz", "38c296c9d81c05598db849fb8103543d6649fec7246c35197d9be8199c75116f");
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "aarch64")))]
 const CANVAS_ASSET: (&str, &str) = ("canvas-v3.2.3-napi-v7-linux-x64.tar.gz", "886d1cc270d4caad1d1698ee97532e79c60e992e16fe5f37f2d3bb058f4292b0");
+#[cfg(all(unix, not(target_os = "macos"), target_arch = "aarch64"))]
+const CANVAS_ASSET: (&str, &str) = ("canvas-v3.2.3-napi-v7-linux-arm64.tar.gz", "ef81f0b1032d52fa5a9c8e4f642cd3f1b6b6b951edaa9c9468b849cb5180f83b");
 
 const MAX_FILE: u64 = 400 << 20;
 
@@ -146,7 +156,10 @@ async fn latest_release(client: &reqwest::Client, repo: &'static str) -> Result<
         .await
         .and_then(reqwest::Response::error_for_status)
         .map_err(|source| ModuleError::GitHub { repo, source })?;
-    let body = res.bytes().await.map_err(|source| ModuleError::GitHub { repo, source })?;
+    let body = crate::http::read_limited(res, 4 << 20).await.map_err(|e| match e {
+        crate::http::BodyError::TooLarge => ModuleError::TooLarge,
+        crate::http::BodyError::Network(source) => ModuleError::GitHub { repo, source },
+    })?;
     serde_json::from_slice(&body).map_err(|source| ModuleError::GitHubAnswer { repo, source })
 }
 
@@ -182,15 +195,15 @@ async fn download(client: &reqwest::Client, url: &str, sha256: Option<&str>) -> 
     if res.content_length().is_some_and(|n| n > MAX_FILE) {
         return Err(ModuleError::TooLarge);
     }
-    let bytes = res.bytes().await.map_err(ModuleError::Download)?;
-    if bytes.len() as u64 > MAX_FILE {
-        return Err(ModuleError::TooLarge);
-    }
+    let bytes = crate::http::read_limited(res, MAX_FILE as usize).await.map_err(|e| match e {
+        crate::http::BodyError::TooLarge => ModuleError::TooLarge,
+        crate::http::BodyError::Network(source) => ModuleError::Download(source),
+    })?;
     let digest = crate::hex::encode(&Sha256::digest(&bytes));
     if sha256.is_some_and(|expected| !expected.eq_ignore_ascii_case(&digest)) {
         return Err(ModuleError::Corrupted(url.to_owned()));
     }
-    Ok(bytes.to_vec())
+    Ok(bytes)
 }
 
 /// Writes the program at `path` through a temporary file (`fill` writes its bytes), then puts it
@@ -269,6 +282,8 @@ mod tests {
         assert_eq!(sum_of(list, "yt-dlp.exe").as_deref(), Some("66674953fe251b89f4d08c5f0e35e0728679bd67ab3d7d05c0562af101dd3e7a"));
         assert_eq!(sum_of(list, "yt-dlp_linux").as_deref(), Some("58162f9bfdc27458ea47bfcb311cf47028f17d8154a8bf7d689861d46399230a"));
         assert_eq!(sum_of(list, "yt-dlp_macos").as_deref(), Some("0f192b7ec147ab6288885d6351d9ab67367640029b4377576ef46dd79cf7b202"));
+        assert!(sum_of(list, YTDLP_ASSET).is_some(), "this build's program is in the list");
+        assert!(sum_of(list, "yt-dlp_arm64.exe").is_some() && sum_of(list, "yt-dlp_linux_aarch64").is_some(), "ARM's too");
         assert_eq!(sum_of(list, "yt-dlp"), Some(sum_of(list, "yt-dlp").unwrap()), "exact names only");
         assert!(sum_of(list, "yt-dlp_linux.zip").is_some_and(|s| Some(s) != sum_of(list, "yt-dlp_linux")));
         assert_eq!(sum_of(list, "missing.exe"), None);

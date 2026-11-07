@@ -112,39 +112,6 @@ fn deliver(summary: &str, body: &str) {
     let _ = std::process::Command::new("/usr/bin/osascript").args(script).arg(summary).arg(body).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
 }
 
-/// A browser started without the extension: offers to install it. `on_install` runs (on another
-/// thread) when the user accepts. `false` when the notification cannot answer (Windows toasts):
-/// the caller then asks in its window.
-pub fn offer_extension(browser: &str, on_install: impl FnOnce() + Send + 'static) -> bool {
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        let summary = crate::trf!("{b} : ajouter l'extension RDM ?", "{b}: add the RDM extension?", b = browser);
-        let body = escape_markup(crate::tr!(
-            "Les téléchargements et les vidéos de ce navigateur iront dans RDM.",
-            "Downloads and videos from this browser will go to RDM."
-        ));
-        std::thread::spawn(move || {
-            let mut n = notify_rust::Notification::new();
-            n.appname("RDM").summary(&summary).body(&body).icon("rdm").hint(notify_rust::Hint::DesktopEntry("rdm".into()));
-            // "default": a click on the notification itself.
-            n.action("install", crate::tr!("Installer", "Install")).action("default", crate::tr!("Installer", "Install"));
-            if let Ok(handle) = n.show() {
-                handle.wait_for_action(|action| {
-                    if matches!(action, "install" | "default") {
-                        on_install();
-                    }
-                });
-            }
-        });
-        true
-    }
-    #[cfg(not(all(unix, not(target_os = "macos"))))]
-    {
-        let _ = (browser, on_install);
-        false
-    }
-}
-
 fn escape_markup(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }

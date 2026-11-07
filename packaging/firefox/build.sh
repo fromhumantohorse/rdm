@@ -12,8 +12,8 @@ root=$(cd "$(dirname "$0")/../.." && pwd)
 src="$root/extension"
 out=${1:-"$root/target/firefox"}
 
-rm -rf "$out"
-mkdir -p "$out"
+. "$root/packaging/output-path.sh"
+prepare_output
 cp -R "$src/." "$out/"
 rm -rf "$out/test"
 

@@ -192,7 +192,10 @@ where
         let res = make().await?.send().await.map_err(|_| Error::Network)?;
         match res.status() {
             s if s.is_success() => {
-                let body = res.bytes().await.map_err(|_| Error::Network)?;
+                let body = crate::http::read_limited(res, 4 << 20).await.map_err(|e| match e {
+                    crate::http::BodyError::TooLarge => Error::Unexpected,
+                    crate::http::BodyError::Network(_) => Error::Network,
+                })?;
                 return serde_json::from_slice(&body).map_err(|_| Error::Unexpected);
             }
             StatusCode::TOO_MANY_REQUESTS => tokio::time::sleep(QUOTA_WAIT).await,

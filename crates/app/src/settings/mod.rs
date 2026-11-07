@@ -9,7 +9,7 @@ use domain::Category;
 use serde::{Deserialize, Serialize};
 
 use crate::i18n::Language;
-pub use store::{config_file, create_private_dir, keep_aside, load_json, read_config, save_json, with_suffix, write_private};
+pub use store::{config_file, create_private_dir, keep_aside, load_json, read_config, save_json, with_suffix, write_if_changed, write_private};
 
 pub const BRIDGE_PORT: u16 = 9614;
 const FILE: &str = "settings.json";
@@ -97,7 +97,8 @@ pub struct Settings {
     pub confirm_browser: bool,
     /// The extension's button over videos is a small icon, without its text.
     pub mini_button: bool,
-    /// A browser starting without the extension gets RDM's offer to install it (like IDM).
+    /// A browser opening without the extension (and the default one when RDM opens) gets it offered:
+    /// RDM starts its installation there, and the browser asks the user.
     pub offer_extension: bool,
     pub connections: u8,
     /// Downloads of the main queue running at once; the rest wait.

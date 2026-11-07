@@ -10,9 +10,18 @@ pub(super) fn security_tab(ui: &mut Ui, p: &Palette, secrets: &mut Secrets, key:
             ui,
             p,
             tr!(
-                "Envoyés seulement à ce site (et ses sous-domaines), en HTTPS ; pour un site en HTTP local, écrivez « http://nom ». Mots de passe chiffrés pour votre seul compte.",
-                "Sent only to that site (and its subdomains), over HTTPS; for a local HTTP site, type \"http://name\". Passwords are encrypted for your account only."
+                "Envoyés seulement à ce site (et ses sous-domaines), en HTTPS ; pour un site en HTTP local, écrivez « http://nom ».",
+                "Sent only to that site (and its subdomains), over HTTPS; for a local HTTP site, type \"http://name\"."
             ),
+        );
+        note(
+            ui,
+            p,
+            if cfg!(windows) {
+                tr!("Mots de passe chiffrés pour votre seul compte.", "Passwords are encrypted for your account only.")
+            } else {
+                tr!("Mots de passe gardés dans un fichier que seul votre compte peut lire.", "Passwords are kept in a file only your account can read.")
+            },
         );
         ui.add_space(6.0);
         let mut remove = None;

@@ -55,3 +55,4 @@ for (const f of ["background.js", "content.js"]) {
 }
 console.log(`i18n   OK  ${locales.join(" + ")} (${en.length} messages)`)'
 node --test test/*.test.mjs
+node --test ../packaging/test/*.test.mjs

@@ -93,6 +93,7 @@ impl Manager {
                         finished = Some(e.name.clone());
                         verify = e.download.checksum.is_some();
                         e.retries = 0;
+                        e.forget_secrets();
                         e.download.complete()
                     }
                     // Stopped to start again (new route, link, certificate choice): straight back.
@@ -144,7 +145,7 @@ fn failure_of(err: &engine::EngineError) -> Failure {
             None => Failure::ConnectionInterrupted,
         },
         E::Io(e) => Failure::Disk(e.to_string()),
-        E::RangeIgnored => Failure::InconsistentRange,
+        E::RangeIgnored | E::FileChanged => Failure::InconsistentRange,
         E::Empty => Failure::NoData,
         E::Truncated => Failure::CutBeforeTheEnd,
         E::Stalled => Failure::ConnectionInterrupted,
@@ -170,6 +171,7 @@ mod tests {
         use engine::EngineError as E;
 
         assert_eq!(failure_of(&E::RangeIgnored), Failure::InconsistentRange);
+        assert_eq!(failure_of(&E::FileChanged), Failure::InconsistentRange);
         assert_eq!(failure_of(&E::Empty), Failure::NoData);
         assert_eq!(failure_of(&E::Truncated), Failure::CutBeforeTheEnd);
         assert_eq!(failure_of(&E::Stalled), Failure::ConnectionInterrupted);

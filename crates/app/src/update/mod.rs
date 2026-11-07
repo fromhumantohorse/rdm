@@ -145,14 +145,23 @@ pub fn installs_itself(release: &Release) -> bool {
     release.package.is_some() && method() != Method::Manual
 }
 
+/// This build's architecture, as each kind of package writes it. RDM never updates itself with a
+/// package of another one: it could not run (Linux), or would run under emulation (Windows on ARM).
+const ARM: bool = cfg!(target_arch = "aarch64");
+const MSI_ARCH: &str = if ARM { "arm64" } else { "x64" };
+/// The tarball's top folder has the same name, without the extensions.
+const TARBALL: &str = if ARM { "rdm-linux-arm64.tar.gz" } else { "rdm-linux-x64.tar.gz" };
+const DEB_END: &str = if ARM { "_arm64.deb" } else { "_amd64.deb" };
+const RPM_END: &str = if ARM { ".aarch64.rpm" } else { ".x86_64.rpm" };
+
 /// Whether a release asset is the package for `method`.
 fn wanted(method: Method, name: &str) -> bool {
     let name = name.to_ascii_lowercase();
     match method {
-        Method::Msi => name.ends_with(".msi") && name.contains("x64"),
-        Method::Binary => name == "rdm-linux-x64.tar.gz",
-        Method::Deb => name.ends_with("_amd64.deb"),
-        Method::Rpm => name.ends_with(".x86_64.rpm"),
+        Method::Msi => name.ends_with(".msi") && name.contains(MSI_ARCH),
+        Method::Binary => name == TARBALL,
+        Method::Deb => name.ends_with(DEB_END),
+        Method::Rpm => name.ends_with(RPM_END),
         Method::Manual => false,
     }
 }
@@ -182,7 +191,10 @@ async fn latest(client: &reqwest::Client) -> Result<Option<ApiRelease>, UpdateEr
     if !res.status().is_success() {
         return Err(UpdateError::Refused(res.status().as_u16()));
     }
-    let body = res.bytes().await.map_err(|_| UpdateError::Unreachable)?;
+    let body = crate::http::read_limited(res, 4 << 20).await.map_err(|e| match e {
+        crate::http::BodyError::TooLarge => UpdateError::UnexpectedAnswer,
+        crate::http::BodyError::Network(_) => UpdateError::Unreachable,
+    })?;
     let r: ApiRelease = serde_json::from_slice(&body).map_err(|_| UpdateError::UnexpectedAnswer)?;
     Ok((!r.draft && !r.prerelease).then_some(r))
 }
@@ -246,7 +258,11 @@ pub async fn signed_firefox_xpi(client: &reqwest::Client, dest: &Path) -> Result
     if res.content_length().is_some_and(|n| n > MAX_XPI) {
         return Ok(false);
     }
-    let bytes = res.bytes().await.map_err(|_| UpdateError::Interrupted)?;
+    let bytes = match crate::http::read_limited(res, MAX_XPI as usize).await {
+        Ok(bytes) => bytes,
+        Err(crate::http::BodyError::TooLarge) => return Ok(false),
+        Err(crate::http::BodyError::Network(_)) => return Err(UpdateError::Interrupted),
+    };
     // Mozilla's signature files: without them release Firefox refuses the package.
     let signed = |marker: &[u8]| bytes.windows(marker.len()).any(|w| w == marker);
     if bytes.len() as u64 > MAX_XPI || !(signed(b"META-INF/mozilla.rsa") || signed(b"META-INF/cose.sig")) {
@@ -287,25 +303,31 @@ mod tests {
 
     #[test]
     fn picks_the_package_of_each_installation_method() {
-        let mut assets = vec![
-            asset("RDM-1.0.0-x64-setup.msi"),
-            asset("RDM-1.0.0-x64-setup.msi.sig"),
-            asset("rdm-linux-x64.tar.gz"),
-            asset("rdm_1.0.0-1_amd64.deb"),
-            asset("rdm_1.0.0-1_amd64.deb.sig"),
-            asset("rdm-1.0.0-1.x86_64.rpm"),
-            asset("rdm-1.0.0-1.x86_64.rpm.sig"),
-            asset("rdm-firefox.xpi"),
-        ];
+        // Every architecture's packages in the release, in both orders: only this build's is taken.
+        let names = |arm: bool| {
+            let (msi, tarball, deb, rpm) = if arm { ("arm64", "arm64", "arm64", "aarch64") } else { ("x64", "x64", "amd64", "x86_64") };
+            [
+                format!("RDM-1.0.0-{msi}-setup.msi"),
+                format!("RDM-1.0.0-{msi}-setup.msi.sig"),
+                format!("rdm-linux-{tarball}.tar.gz"),
+                format!("rdm_1.0.0-1_{deb}.deb"),
+                format!("rdm_1.0.0-1_{deb}.deb.sig"),
+                format!("rdm-1.0.0-1.{rpm}.rpm"),
+                format!("rdm-1.0.0-1.{rpm}.rpm.sig"),
+                "rdm-firefox.xpi".to_owned(),
+            ]
+        };
+        let (ours, theirs) = (names(ARM), names(!ARM));
+        let mut assets: Vec<Asset> = theirs.iter().chain(&ours).map(|n| asset(n)).collect();
         let msi = package(&assets, Method::Msi).unwrap();
-        assert!(msi.url.ends_with("RDM-1.0.0-x64-setup.msi"));
+        assert_eq!(msi.name, ours[0]);
         assert_eq!((msi.size, msi.sha256.as_deref()), (42, Some("abcdef")));
         assert!(msi.signature.unwrap().ends_with(".msi.sig"));
         assert!(package(&assets, Method::Binary).is_none(), "its signature is not online yet");
-        assets.push(asset("rdm-linux-x64.tar.gz.sig"));
-        assert_eq!(package(&assets, Method::Binary).unwrap().name, "rdm-linux-x64.tar.gz");
-        assert_eq!(package(&assets, Method::Deb).unwrap().name, "rdm_1.0.0-1_amd64.deb");
-        assert_eq!(package(&assets, Method::Rpm).unwrap().name, "rdm-1.0.0-1.x86_64.rpm");
+        assets.push(asset(&format!("{}.sig", ours[2])));
+        assert_eq!(package(&assets, Method::Binary).unwrap().name, ours[2]);
+        assert_eq!(package(&assets, Method::Deb).unwrap().name, ours[3]);
+        assert_eq!(package(&assets, Method::Rpm).unwrap().name, ours[5]);
         assert!(package(&assets, Method::Manual).is_none());
     }
 
@@ -313,7 +335,7 @@ mod tests {
     fn older_versions_do_not_recognise_the_new_installer_name() {
         // RDM 0.1 / 0.2.0 look for a name ending with "x64.msi" and have a broken installation
         // step: they must fall back to opening the release page.
-        let name = format!("RDM-{}-x64-setup.msi", env!("CARGO_PKG_VERSION"));
+        let name = format!("RDM-{}-{MSI_ARCH}-setup.msi", env!("CARGO_PKG_VERSION"));
         assert!(!name.to_ascii_lowercase().ends_with("x64.msi"));
     }
 

@@ -266,14 +266,16 @@ impl App<'_> {
         }
     }
 
-    /// A Firefox extension asked to use the bridge: the user approves its (per-install) origin once.
+    /// A Firefox or Safari extension asked to use the bridge: the user approves its origin once.
     pub(super) fn firefox_prompt(&self, ctx: &Context) {
         let Some(origin) = self.manager.firefox_pending() else { return };
         let p = Palette::from_ctx(ctx);
         Modal::new(Id::new("firefox")).frame(dialog_frame(&p)).backdrop_color(backdrop(&p)).show(ctx, |ui| {
             ui.set_width(500.0);
             let subtitle = tr!("Une extension demande à envoyer des téléchargements à RDM.", "An extension asks to send downloads to RDM.");
-            if dialog_header(ui, &p, icon::PUZZLE_PIECE, p.warning, tr!("Extension Firefox / Waterfox", "Firefox / Waterfox extension"), subtitle) {
+            let safari = origin.starts_with("safari-web-extension://");
+            let title = if safari { tr!("Extension Safari", "Safari extension") } else { tr!("Extension Firefox / Waterfox", "Firefox / Waterfox extension") };
+            if dialog_header(ui, &p, icon::PUZZLE_PIECE, p.warning, title, subtitle) {
                 self.manager.answer_firefox(None);
             }
             ui.add_space(14.0);
@@ -282,13 +284,15 @@ impl App<'_> {
                 ui.add(Label::new(RichText::new(&origin).monospace().color(p.text)).wrap());
             });
             ui.add_space(10.0);
-            ui.label(
-                RichText::new(tr!(
+            let hint = if safari {
+                tr!("Autorisez-la seulement si vous venez d'activer l'extension RDM dans Safari.", "Allow it only if you just turned on the RDM extension in Safari.")
+            } else {
+                tr!(
                     "Autorisez-la seulement si vous venez d'installer ou de recharger l'extension RDM dans Firefox ou Waterfox.",
                     "Allow it only if you just installed or reloaded the RDM extension in Firefox or Waterfox."
-                ))
-                .color(p.muted),
-            );
+                )
+            };
+            ui.label(RichText::new(hint).color(p.muted));
             ui.add_space(16.0);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if accent_button(ui, icon::CHECK, tr!("Autoriser", "Allow")).clicked() {

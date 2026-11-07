@@ -25,6 +25,14 @@ install -m 755 "$exe" "$app/Contents/MacOS/rdm"
 cp packaging/macos/rdm.icns "$app/Contents/Resources/rdm.icns"
 sed "s/__VERSION__/$version/g" packaging/macos/Info.plist >"$app/Contents/Info.plist"
 plutil -lint "$app/Contents/Info.plist" >/dev/null
+# Safari's extension, when built (packaging/safari/build.sh): an extension must run in a sandbox,
+# which its own signature says.
+appex="target/safari/RDM Extension.appex"
+if [ -d "$appex" ]; then
+    mkdir -p "$app/Contents/PlugIns"
+    cp -R "$appex" "$app/Contents/PlugIns/"
+    codesign --force --timestamp=none --sign - --entitlements packaging/safari/extension.entitlements "$app/Contents/PlugIns/RDM Extension.appex"
+fi
 codesign --force --timestamp=none --sign - "$app"
 codesign --verify --strict "$app"
 

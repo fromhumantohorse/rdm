@@ -6,12 +6,12 @@ use std::{sync::Arc, time::Duration};
 use axum::{
     Json,
     extract::State,
-    http::{HeaderMap, StatusCode, header::ORIGIN},
+    http::{HeaderMap, HeaderValue, StatusCode, header::ORIGIN},
 };
 use serde::{Deserialize, Serialize};
 
 use super::{
-    access::{Access, browser_of, guard, guard_access},
+    access::{Access, PAIR, browser_of, guard, guard_access, has_random_origin, is_safari},
     web,
 };
 use crate::manager::{self, AddRequest, Manager};
@@ -19,9 +19,16 @@ use crate::manager::{self, AddRequest, Manager};
 const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 const CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub(super) async fn ping(State(manager): State<Arc<Manager>>, headers: HeaderMap) -> Result<&'static str, StatusCode> {
+pub(super) async fn ping(State(manager): State<Arc<Manager>>, headers: HeaderMap) -> Result<(HeaderMap, &'static str), StatusCode> {
     guard(&manager, &headers)?;
-    Ok(concat!("rdm ", env!("CARGO_PKG_VERSION")))
+    let mut answer = HeaderMap::new();
+    // Approved: Safari's extension keeps this for its next launches (see `access::PAIR`).
+    if is_safari(&headers)
+        && let Ok(pair) = HeaderValue::from_str(&manager.safari_pair())
+    {
+        answer.insert(PAIR, pair);
+    }
+    Ok((answer, concat!("rdm ", env!("CARGO_PKG_VERSION"))))
 }
 
 /// `GET /ping`: is RDM here (the Firefox extension's `GET`s carry no `Origin`).
@@ -195,9 +202,9 @@ pub(super) async fn quit(State(manager): State<Arc<Manager>>, headers: HeaderMap
 }
 
 pub(super) async fn show(State(manager): State<Arc<Manager>>, headers: HeaderMap) -> StatusCode {
-    // The Firefox extension's toolbar button (not approved yet: before the guard refuses it): an
-    // explicit request, so a put-off approval question returns. Not for a web page's request.
-    if headers.get(ORIGIN).is_some_and(|o| o.as_bytes().starts_with(b"moz-extension://")) {
+    // The Firefox or Safari extension's toolbar button (not approved yet: before the guard refuses
+    // it): an explicit request, so a put-off approval question returns. Not for a web page's request.
+    if has_random_origin(&headers) {
         manager.firefox_wake();
     }
     if let Err(status) = guard(&manager, &headers) {

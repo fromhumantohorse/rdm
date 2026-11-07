@@ -33,6 +33,13 @@ impl Disk {
         tokio::task::spawn_blocking(move || disk.write_all_at(&buf, offset).map(|()| buf)).await.map_err(std::io::Error::other)?
     }
 
+    /// What was written so far is on disk once this returns: through this handle, no other opened
+    /// and closed around the connections (on Windows, an antivirus scan of the file at each close).
+    pub(super) async fn sync(self: &Arc<Self>) -> std::io::Result<()> {
+        let disk = self.clone();
+        tokio::task::spawn_blocking(move || disk.0.sync_data()).await.map_err(std::io::Error::other)?
+    }
+
     pub(super) async fn truncate(self: &Arc<Self>) -> std::io::Result<()> {
         let disk = self.clone();
         tokio::task::spawn_blocking(move || disk.0.set_len(0)).await.map_err(std::io::Error::other)?

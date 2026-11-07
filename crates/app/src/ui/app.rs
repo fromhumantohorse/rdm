@@ -246,7 +246,7 @@ impl eframe::App for App<'_> {
             });
         self.settings_dialog(ctx);
         self.report_dialog(ctx, &mut actions);
-        // A browser started without the extension and the user said yes (or Windows asks here).
+        // RDM started the extension's installation in a browser, and the user has steps to follow.
         if let Some(browser) = self.manager.take_extension_offer() {
             self.open_browsers_on(browser);
         }

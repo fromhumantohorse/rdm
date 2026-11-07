@@ -10,16 +10,16 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $src = Join-Path $root 'extension'
 if (-not $Out) { $Out = Join-Path $root 'target\chromium' }
 
-if (Test-Path $Out) { Remove-Item $Out -Recurse -Force }
-New-Item -ItemType Directory -Force $Out | Out-Null
+. (Join-Path $PSScriptRoot '..\output-path.ps1')
+$Out = Initialize-ExtensionOutput -Root $root -Output $Out
 Copy-Item (Join-Path $src '*') $Out -Recurse -Force
-Remove-Item (Join-Path $Out 'test') -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $Out 'test') -Recurse -Force -ErrorAction SilentlyContinue
 
 $manifest = [IO.File]::ReadAllText((Join-Path $Out 'manifest.json'))
 if (-not $manifest.Contains('"service_worker": "background.js"')) { throw 'background service worker not found in extension\manifest.json' }
 
 $zip = Join-Path (Split-Path $Out -Parent) 'rdm-chromium.zip'
-if (Test-Path $zip) { Remove-Item $zip -Force }
+if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 [IO.Compression.ZipFile]::CreateFromDirectory($Out, $zip)
 

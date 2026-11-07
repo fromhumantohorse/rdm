@@ -6,7 +6,7 @@
   <Product Id="*" Name="RDM" Language="1033" Codepage="1252" Version="$(var.Version)"
            Manufacturer="RDM" UpgradeCode="7F3C2A91-5B64-4E0B-9D2A-6C8E1F4B3A77">
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perUser" InstallPrivileges="limited"
-             Description="RDM - Rust Download Manager" Platform="x64" />
+             Description="RDM - Rust Download Manager" Platform="$(sys.BUILDARCH)" />
     <MajorUpgrade DowngradeErrorMessage="A newer version of RDM is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
@@ -94,7 +94,7 @@
     <CustomAction Id="RemoveAutostart" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred" Return="ignore" Impersonate="yes" />
 
     <!-- Start RDM when the installation ends (also after an in-app update). -->
-    <CustomAction Id="Launch" Directory="INSTALLDIR" ExeCommand="[INSTALLDIR]rdm.exe" Return="asyncNoWait" Impersonate="yes" />
+    <CustomAction Id="Launch" Directory="INSTALLDIR" ExeCommand="&quot;[INSTALLDIR]rdm.exe&quot;" Return="asyncNoWait" Impersonate="yes" />
     <InstallExecuteSequence>
       <Custom Action="QuitRdm" Before="EndRdm">RDM_QUITS AND (Installed OR WIX_UPGRADE_DETECTED)</Custom>
       <Custom Action="EndRdm" Before="InstallValidate">Installed OR WIX_UPGRADE_DETECTED</Custom>

@@ -44,6 +44,25 @@ pub fn full_speed_in_background() {
     }
 }
 
+/// RDM just went to the tray, its window gone: what that window used (its fonts, its images, the
+/// graphics driver) goes back to the system now, not whenever the system asks for it. Pages still
+/// needed come back by themselves.
+pub fn give_memory_back() {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, SetProcessWorkingSetSize};
+        // SAFETY: our own process pseudo-handle; these two values mean "as much as you can".
+        unsafe {
+            SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX);
+        }
+    }
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: a plain call; glibc returns what its arenas hold free.
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
+
 /// Transfer threads (network and disk): above normal priority on Windows, so arriving data is
 /// handled at once even when the machine is busy — the TCP windows stay open and the server keeps
 /// sending; on macOS their class of service, which also keeps them on Apple Silicon's performance

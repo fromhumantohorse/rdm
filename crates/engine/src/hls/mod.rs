@@ -13,6 +13,7 @@ use std::{
 use futures_util::{StreamExt, stream};
 use reqwest::{Client, header::HeaderMap};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::{
     fs::{self, OpenOptions},
     io::{AsyncSeekExt, AsyncWriteExt},
@@ -22,8 +23,8 @@ use url::Url;
 
 use crate::{EngineError, Job, Outcome, Progress, RateLimit, merged::Split, state_path};
 use fetch::{Budget, Http, fetch_part, get};
-use playlist::{Part, Playlist, parse};
 pub use playlist::Variant;
+use playlist::{Part, Playlist, parse};
 
 const MAX_PLAYLIST_BYTES: u64 = 16 << 20;
 /// More segments than this is not a video (a day of 1-second segments is 86,400): refused rather
@@ -77,8 +78,7 @@ pub enum PlaylistError {
 }
 
 pub(crate) fn is_playlist(url: &Url, content_type: Option<&str>) -> bool {
-    url.path().to_ascii_lowercase().ends_with(".m3u8")
-        || content_type.is_some_and(|t| t.to_ascii_lowercase().contains("mpegurl"))
+    url.path().to_ascii_lowercase().ends_with(".m3u8") || content_type.is_some_and(|t| t.to_ascii_lowercase().contains("mpegurl"))
 }
 
 /// What a playlist offers, without downloading it.
@@ -95,6 +95,8 @@ pub struct HlsInfo {
 struct Resume {
     done: usize,
     bytes: u64,
+    #[serde(default)]
+    playlist: Option<[u8; 32]>,
 }
 
 pub(crate) async fn info(client: &Client, url: &Url, headers: &HeaderMap) -> Result<HlsInfo, EngineError> {
@@ -112,12 +114,7 @@ pub(crate) async fn info(client: &Client, url: &Url, headers: &HeaderMap) -> Res
     }
 }
 
-pub(crate) async fn run(
-    client: &Client,
-    job: &Job,
-    progress: Arc<Progress>,
-    cancel: CancellationToken,
-) -> Result<Outcome, EngineError> {
+pub(crate) async fn run(client: &Client, job: &Job, progress: Arc<Progress>, cancel: CancellationToken) -> Result<Outcome, EngineError> {
     let http = Http { client, headers: &job.headers, origin: &job.url, keys: Mutex::default(), limit: &job.limit, own_limit: &job.own_limit };
     let n = job.connections;
     // Playlists load with retries: a pause must not wait for them.
@@ -184,14 +181,16 @@ async fn download(
     cancel: &CancellationToken,
 ) -> Result<Outcome, EngineError> {
     let state = state_path(target);
+    let playlist = fingerprint(&parts);
     let mut resume = load_state(&state).await.unwrap_or_default();
     if let Some(dir) = target.parent() {
         fs::create_dir_all(dir).await?;
     }
     let mut file = OpenOptions::new().create(true).write(true).truncate(false).open(target).await?;
-    if file.metadata().await?.len() < resume.bytes || resume.done > parts.len() {
+    if file.metadata().await?.len() < resume.bytes || resume.done > parts.len() || resume.playlist != Some(playlist) {
         resume = Resume::default();
     }
+    resume.playlist = Some(playlist);
     file.set_len(resume.bytes).await?;
     file.seek(SeekFrom::End(0)).await?;
 
@@ -272,6 +271,43 @@ async fn save_state(state: &Path, resume: &Resume) -> std::io::Result<()> {
     crate::write_atomic(state, &serde_json::to_vec(resume)?).await
 }
 
+/// A live window or a changed playlist must not append new segments to unrelated saved bytes.
+/// Include encryption and byte ranges as well as URLs: one resource can carry many segments.
+fn fingerprint(parts: &[Part]) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    let text = |hash: &mut Sha256, value: &str| {
+        hash.update((value.len() as u64).to_be_bytes());
+        hash.update(value.as_bytes());
+    };
+    for part in parts {
+        text(&mut hash, part.url.as_str());
+        hash.update(part.seq.to_be_bytes());
+        match part.range {
+            Some((offset, len)) => {
+                hash.update([1]);
+                hash.update(offset.to_be_bytes());
+                hash.update(len.to_be_bytes());
+            }
+            None => hash.update([0]),
+        }
+        match &part.key {
+            Some(key) => {
+                hash.update([1]);
+                text(&mut hash, key.url.as_str());
+                match key.iv {
+                    Some(iv) => {
+                        hash.update([1]);
+                        hash.update(iv);
+                    }
+                    None => hash.update([0]),
+                }
+            }
+            None => hash.update([0]),
+        }
+    }
+    hash.finalize().into()
+}
+
 async fn load(http: &Http<'_>, url: &Url) -> Result<Playlist, EngineError> {
     let (body, _) = get(http, url, None, MAX_PLAYLIST_BYTES, None).await?;
     parse(url, &String::from_utf8_lossy(&body))
@@ -287,10 +323,26 @@ mod tests {
 
     #[test]
     fn the_size_is_judged_from_the_segments_written() {
-        let after = |done, bytes| Resume { done, bytes };
+        let after = |done, bytes| Resume { done, bytes, ..Resume::default() };
 
         assert_eq!(estimated_total(&after(0, 0), 10), None, "nothing written yet");
         assert_eq!(estimated_total(&after(2, 2_000), 10), Some(10_000));
         assert_eq!(estimated_total(&after(1, u64::MAX / 2), MAX_PARTS), Some(u64::MAX), "huge segments: capped, no overflow");
+    }
+
+    #[test]
+    fn changed_playlist_cannot_reuse_a_resume_point() {
+        let base: Url = "https://example.com/video.m3u8".parse().unwrap();
+        let signature = |body: &str| {
+            let Playlist::Media { parts, .. } = parse(&base, body).unwrap() else { panic!("media") };
+            fingerprint(&parts)
+        };
+        let original = "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:5\n#EXT-X-BYTERANGE:10@0\na.ts\n";
+        let expected = signature(original);
+        assert_eq!(expected, signature(original));
+        for changed in [original.replace("a.ts", "b.ts"), original.replace(":5", ":6"), original.replace("10@0", "10@10")] {
+            assert_ne!(expected, signature(&changed));
+        }
+        assert!(serde_json::from_str::<Resume>(r#"{"done":1,"bytes":10}"#).unwrap().playlist.is_none(), "old checkpoints restart safely");
     }
 }

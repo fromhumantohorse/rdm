@@ -23,12 +23,13 @@ pub fn plan_segments(size: u64, n: u8, min_len: u64) -> Vec<Segment> {
     if size == 0 {
         return Vec::new();
     }
-    let n = u64::from(n.max(1)).min(size.div_ceil(min_len.max(1)));
-    let chunk = size.div_ceil(n);
+    let n = u64::from(n.max(1)).min((size / min_len.max(1)).max(1));
+    let (chunk, extra) = (size / n, size % n);
     (0..n)
-        .map(|i| i * chunk)
-        .take_while(|&s| s < size)
-        .map(|s| Segment::new(s, s.saturating_add(chunk).min(size) - 1))
+        .map(|i| {
+            let start = i * chunk + i.min(extra);
+            Segment::new(start, start + chunk + u64::from(i < extra) - 1)
+        })
         .collect()
 }
 
@@ -47,6 +48,11 @@ mod tests {
     #[test]
     fn no_piece_is_smaller_than_the_minimum() {
         assert_eq!(plan_segments(1000, 32, 500).len(), 2);
+        for (size, n, minimum) in [(1001, 32, 500), (100, 6, 16), (10, 32, 100)] {
+            let segments = plan_segments(size, n, minimum);
+            assert!(segments.iter().all(|s| s.end - s.start + 1 >= minimum.min(size)));
+            assert_eq!(segments.last().unwrap().end, size - 1);
+        }
     }
 
     #[test]
@@ -66,7 +72,7 @@ mod tests {
     fn never_plans_an_empty_piece() {
         let segments = plan_segments(10, 6, 1);
 
-        assert_eq!(segments.len(), 5);
+        assert_eq!(segments.len(), 6);
         assert!(segments.iter().all(|s| s.start <= s.end && s.end < 10));
     }
 

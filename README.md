@@ -5,7 +5,7 @@
 <h1 align="center">RDM — Rust Download Manager</h1>
 
 <p align="center">
-  A fast, good-looking, open-source download manager for <b>Windows 11</b>, <b>Linux</b> and <b>macOS</b> (Apple Silicon).<br>
+  A fast, good-looking, open-source download manager for <b>Windows 11</b>, <b>Linux</b> and <b>macOS</b>, on x64 and ARM (Apple Silicon, Snapdragon, Raspberry Pi).<br>
   Up to 64 connections per file, browser extension, videos and YouTube, built-in VirusTotal scans.
 </p>
 
@@ -27,14 +27,15 @@ RDM speaks **16 languages** (English, French, Spanish, German, Italian, Portugue
 
 | System | File | Installation |
 |---|---|---|
-| **Windows 10 / 11** | [`RDM-x.y.z-x64-setup.msi`](https://github.com/fromhumantohorse/rdm/releases/latest) | Double-click. Installed for your account (no administrator rights), Start menu and **Desktop**. A running RDM is closed cleanly and started again. Later updates install silently from RDM. |
+| **Windows 10 / 11** | [`RDM-x.y.z-x64-setup.msi`](https://github.com/fromhumantohorse/rdm/releases/latest) (Windows on ARM: `RDM-x.y.z-arm64-setup.msi`; its window needs OpenGL: Microsoft's "OpenCL, OpenGL, and Vulkan Compatibility Pack" where the PC lacks it) | Double-click. Installed for your account (no administrator rights), Start menu and **Desktop**. A running RDM is closed cleanly and started again. Later updates install silently from RDM. |
 | **Ubuntu 26.04** | source code | `sh install-ubuntu.sh` (see [Installation](#installation)): icon in the GNOME applications, starts at login. |
-| **Debian / Ubuntu** | [`rdm_*.deb`](https://github.com/fromhumantohorse/rdm/releases/latest) | `sudo apt install ./rdm_*.deb` |
-| **Fedora / openSUSE** | [`rdm-*.rpm`](https://github.com/fromhumantohorse/rdm/releases/latest) | `sudo dnf install ./rdm-*.rpm` |
-| **Linux (others)** | [`rdm-linux-x64.tar.gz`](https://github.com/fromhumantohorse/rdm/releases/latest) | Extract, then `sh install.sh` |
+| **Debian / Ubuntu** (x64, ARM64) | [`rdm_*.deb`](https://github.com/fromhumantohorse/rdm/releases/latest) (`_amd64`, `_arm64`) | `sudo apt install ./rdm_*.deb` |
+| **Fedora / openSUSE** (x64, ARM64) | [`rdm-*.rpm`](https://github.com/fromhumantohorse/rdm/releases/latest) (`.x86_64`, `.aarch64`) | `sudo dnf install ./rdm-*.rpm` |
+| **Linux (others)** | [`rdm-linux-x64.tar.gz`](https://github.com/fromhumantohorse/rdm/releases/latest), `rdm-linux-arm64.tar.gz` | Extract, then `sh install.sh` |
 | **macOS 11 or later, Apple Silicon** (M1 and every later chip, natively) | [`RDM-x.y.z-macos-arm64.dmg`](https://github.com/fromhumantohorse/rdm/releases/latest) | Drag RDM to Applications. The first start needs your permission (see [Installation](#installation)). New versions: the card in RDM opens their page. |
 | **Chrome / Brave / Opera / Edge** | from RDM, or [`rdm-chromium.zip`](https://github.com/fromhumantohorse/rdm/releases/latest) | See [Browser extension](#browser-extension) |
 | **Firefox / Waterfox** | from RDM, or [`rdm-firefox.xpi`](https://github.com/fromhumantohorse/rdm/releases/latest) | See [Browser extension](#browser-extension) |
+| **Safari** | inside `RDM.app` | See [Browser extension](#browser-extension) |
 
 ## Screenshots
 
@@ -128,7 +129,7 @@ The shield of a completed file (or its right-click menu) starts the analysis, en
 2. Otherwise the file is uploaded (up to 650 MB; above 32 MB through the dedicated upload address), with the progress in the card, then RDM waits for the verdict (a few minutes usually).
 3. The result shows on the card ("0/72" in green, or the number of engines flagging the file, in red); a click opens the report: verdict breakdown, engines that detect something, fingerprint. A desktop notification also announces the verdict, which is kept from one session to the next.
 
-You need **a free API key** (once): create an account on virustotal.com, copy the key from its "API key" page, paste it in **Settings → Security → VirusTotal** (it is kept encrypted with your passwords). The first click on a shield without a key opens that setting directly. The free API allows 4 requests per minute: RDM runs analyses one at a time and waits if the quota is reached.
+You need **a free API key** (once): create an account on virustotal.com, copy the key from its "API key" page, paste it in **Settings → Security → VirusTotal** (it is kept with your passwords: encrypted on Windows, in a file only your account can read on Linux and macOS). The first click on a shield without a key opens that setting directly. The free API allows 4 requests per minute: RDM runs analyses one at a time and waits if the quota is reached.
 
 Privacy: an uploaded file is shared with antivirus vendors. Do not analyse your personal documents. The file's name is not sent (only its extension).
 
@@ -136,11 +137,11 @@ Privacy: an uploaded file is shared with antivirus vendors. Do not analyse your 
 
 **The extension is bundled in RDM, which installs it.** The **Browser extension** card in the sidebar (or **Settings → Browser → Install the extension…**; the window also opens by itself at first start) lists the browsers on this computer — any Chromium- or Firefox-based browser Windows lists as installed or found in the macOS Applications folders (Chrome, Edge, Brave, Opera, Vivaldi, Firefox, Waterfox, LibreWolf, Floorp, Zen…), plus **Add a browser…** for a portable one — and those the extension talks to RDM from ("Connected"). **Remove the extension** makes the extension uninstall itself at its next check-in. **Install** writes the extension to a fixed folder (`%LOCALAPPDATA%\RDM\Extension` on Windows, `~/RDM/Extension` on Linux and macOS, readable by Snap and Flatpak browsers), opens the browser on its extensions page and shows the two remaining clicks, with the path to copy. RDM keeps that folder up to date: the extension follows new versions when the browser restarts.
 
+**RDM offers it by itself**: when you open RDM, in your default browser; then each time you open any browser without the extension, up to six minutes after it starts when it had the extension before (it may just be slow to check in). RDM starts the installation in that browser, which asks for your go-ahead: **Add**. Without an answer, the same offer comes back at that browser's next opening. **Settings → Browser → Offer the extension when a browser starts** turns this off.
+
 **How the extension reaches RDM**: through RDM's **native messaging connector**, which RDM registers with every browser at start. The browser itself starts the connector, and only for the RDM extension, so no approval is needed — including on Firefox and its derivatives — and **a link sent from a page starts RDM if it is not running**. Browsers that cannot start it (a sandboxed Flatpak or Snap browser) fall back to the local bridge on `127.0.0.1:9614`.
 
-**Chrome, Brave, Opera, Edge, Chromium** (Chromium 121 or later): one and the same extension. On the extensions page → **Developer mode** → **Load unpacked** → the folder RDM shows. Without RDM: `rdm-chromium.zip` from the releases page (or `sh packaging/chromium/build.sh`), extract, then load it the same way. A `.crx` would not help: Chrome, Brave and Edge only install `.crx` files from their store. The extension's ID is fixed (`cgailhenfaoohkakpdacohcnmppepjjl`); RDM accepts that one and the Chrome Web Store's (`adoaoaomelojpakojcmkaclkhopkeljp`, being reviewed).
-
-**Firefox, Waterfox, LibreWolf**: [RDM on addons.mozilla.org](https://addons.mozilla.org/firefox/addon/rdm-rust-download-manager/).
+**Chrome, Brave, Opera, Edge, Chromium** (Chromium 121 or later): one and the same extension. While the Chrome Web Store does not list it (RDM asks the store when it installs): on the extensions page → **Developer mode** → **Load unpacked** → the folder RDM shows, as Chrome accepts no other installation from outside its store. Once listed, **Install** opens the extension's page there: **Add to Chrome**, then confirm. Without RDM: `rdm-chromium.zip` from the releases page (or `sh packaging/chromium/build.sh`), extract, then load it the same way. A `.crx` would not help: Chrome, Brave and Edge only install `.crx` files from their store. The extension's ID is fixed (`cgailhenfaoohkakpdacohcnmppepjjl`); RDM accepts that one and the Chrome Web Store's (`adoaoaomelojpakojcmkaclkhopkeljp`, being reviewed).
 
 **Firefox** (140 or later) only keeps extensions **signed by Mozilla**.
 
@@ -148,6 +149,8 @@ Privacy: an uploaded file is shared with antivirus vendors. Do not analyse your 
 - If the GitHub release contains a signed `rdm-firefox.xpi` (the CI signs it when the `AMO_JWT_ISSUER` / `AMO_JWT_SECRET` secrets of a free addons.mozilla.org account are set; the extension is not published for all that), **Install** downloads it and Firefox offers to **Add** it: for good.
 - Otherwise RDM opens `about:debugging`: **Load Temporary Add-on…** → `manifest.json` of the folder shown. A temporary add-on goes away when Firefox closes. Firefox Developer Edition, Nightly, ESR (`xpinstall.signatures.required` set to `false`) and LibreWolf keep the `rdm-firefox.xpi` file RDM writes next to it installed for good.
 - Firefox gives each installation a random origin (`moz-extension://…`): the connector pairs it with RDM automatically. Without the connector, **RDM asks you to allow it** → **Allow**; until then the extension's icon shows a **!** badge and a message in the page explains why (✕ postpones the question by 30 minutes; **Deny** rejects it until RDM restarts).
+
+**Safari** (16.4 or later, macOS): the extension is inside `RDM.app`, once RDM has been started from Applications. **Install** opens Safari's settings on it: tick **RDM**, and allow it on every website. Without an Apple Developer signature, Safari only shows it with **Allow unsigned extensions** (Safari's developer settings), which Safari forgets each time it closes. Safari has no downloads API and starts no connector: the extension takes over the clicks on links to captured types, and talks to the local bridge after **RDM asks you to allow it** once.
 
 If RDM is closed, the browser downloads normally.
 
@@ -170,7 +173,7 @@ Not supported: DRM content (Netflix, Widevine, FairPlay) and merging WebM stream
 
 ## Security and privacy
 
-- **No telemetry**. The only connection you did not ask for: the update check (one request to GitHub's API a day, can be turned off).
+- **No telemetry**. The only connections you did not ask for: the update check (one request to GitHub's API a day, can be turned off), and when RDM offers the extension (can be turned off too), one question to the Chrome Web Store or GitHub: is the extension there to install.
 - **Signed updates**: every package is verified (Ed25519 signature, SHA-256, format) before it is installed.
 - **Cookies never written to disk** (memory only). `SameSite=Strict` cookies are only sent for a link of the same site as the page, as a browser does. Cookies and site logins stay on their site: a playlist (HLS) or a separate audio track pointing to another site's servers never receives them, and what was given over HTTPS never travels in clear (an `http://` segment gets none).
 - **Passwords** (proxy, site logins) and the **VirusTotal API key** are kept apart from the settings, encrypted with DPAPI on Windows (0600 file on Linux and macOS), and sent only to their site, over HTTPS (plain HTTP only for a site you saved as `http://…`).
@@ -220,4 +223,4 @@ The script installs the build tools and, if needed, Rust (rustup), builds RDM, i
 
 Icons: the two vector sources are in `crates/app/assets/icon/` (`rdm-small.svg`, bolder, is used up to 32 px). `python3 packaging/icons/render.py` regenerates every size: Windows `.ico`, macOS `.icns`, Linux icons (16 to 512 px + SVG), the extension's icons, the window and notification-area images.
 
-The GitHub CI (`.github/workflows/release.yml`) builds, lints, tests (Rust and extension, `web-ext lint` for Firefox), audits dependencies (`cargo audit`, and `cargo deny` for licenses, sources and advisories: `deny.toml`), then produces the Windows and Linux binaries, the `.deb`, the `.rpm`, the macOS disk image (Apple Silicon, built natively on an arm64 runner), `rdm-chromium.zip` and `rdm-firefox.xpi`. The Firefox package is signed by Mozilla, when the AMO keys are set, in a job of its own that runs nothing but `web-ext`; the update packages are signed (secret `RDM_SIGNING_KEY`) in another that runs nothing but `openssl` and `gh`: no build tool, build script or other package from a registry ever runs next to a key. Actions are pinned to commits and tools to exact versions (`web-ext`, which signs the Firefox package, with its whole dependency tree: `packaging/web-ext/package-lock.json`); only the release job may write to the repository.
+The GitHub CI (`.github/workflows/release.yml`) builds, lints, tests (Rust and extension, `web-ext lint` for Firefox), audits dependencies (`cargo audit`, and `cargo deny` for licenses, sources and advisories: `deny.toml`), then produces, each natively on a runner of its architecture, the Windows installers (x64, ARM64), the Linux tarballs, `.deb` and `.rpm` (x64, ARM64), the macOS disk image (Apple Silicon, with the Safari extension Xcode builds), `rdm-chromium.zip` and `rdm-firefox.xpi`. The Firefox package is signed by Mozilla, when the AMO keys are set, in a job of its own that runs nothing but `web-ext`; the update packages are signed (secret `RDM_SIGNING_KEY`) in another that runs nothing but `openssl` and `gh`: no build tool, build script or other package from a registry ever runs next to a key. Actions are pinned to commits and tools to exact versions (`web-ext`, which signs the Firefox package, with its whole dependency tree: `packaging/web-ext/package-lock.json`); only the release job may write to the repository.

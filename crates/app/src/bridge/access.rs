@@ -9,8 +9,22 @@ use axum::http::{
 use super::{EXTENSION_ORIGIN, STORE_EXTENSION_ORIGIN};
 use crate::{local, manager::Manager};
 
-/// Sent by the extension: `firefox`, `waterfox`, `chrome`, `brave`, `opera`, `edge` or `chromium`.
+/// Sent by the extension: `firefox`, `waterfox`, `chrome`, `brave`, `opera`, `edge`, `safari`…
 const BROWSER: &str = "x-rdm-browser";
+/// Sent by Safari's extension, once approved: see `Manager::safari_pair`. Its origin changes at each
+/// launch of Safari, and approving it each time would ask too much of the user.
+pub(super) const PAIR: &str = "x-rdm-pair";
+const SAFARI_SCHEME: &str = "safari-web-extension://";
+
+/// Whether this origin is Safari's extension. A web page's request cannot carry such an origin.
+pub(super) fn is_safari(headers: &HeaderMap) -> bool {
+    headers.get(ORIGIN).is_some_and(|o| o.as_bytes().starts_with(SAFARI_SCHEME.as_bytes()))
+}
+
+/// The origins a browser draws at random, approved by the user or the connector (see `Manager`).
+pub(super) fn has_random_origin(headers: &HeaderMap) -> bool {
+    is_safari(headers) || headers.get(ORIGIN).is_some_and(|o| o.as_bytes().starts_with(b"moz-extension://"))
+}
 
 pub(super) fn guard(manager: &Manager, headers: &HeaderMap) -> Result<(), StatusCode> {
     guard_access(manager, headers, Access::Act)
@@ -28,7 +42,8 @@ pub(super) enum Access {
 
 pub(super) fn guard_access(manager: &Manager, headers: &HeaderMap, access: Access) -> Result<(), StatusCode> {
     let token = local::served_token().unwrap_or_default();
-    guard_with(headers, token, access, |origin| manager.firefox_allowed(origin))?;
+    let paired = is_safari(headers) && headers.get(PAIR).is_some_and(|given| manager.safari_pair_matches(given.as_bytes()));
+    guard_with(headers, token, access, |origin| paired || manager.firefox_allowed(origin))?;
     // Which browser the extension runs in (the extension window shows the connected ones); sent
     // by the extension itself or its native connector. A web page cannot set this header; an
     // anonymous read (any program of the computer) is not taken at its word either.
@@ -39,7 +54,7 @@ pub(super) fn guard_access(manager: &Manager, headers: &HeaderMap, access: Acces
     Ok(())
 }
 
-/// `firefox`: whether a (`moz-extension://…`) origin was approved by the user. Such an origin not
+/// `firefox`: whether a (`moz-extension://…`, `safari-web-extension://…`) origin was approved by the user. Such an origin not
 /// approved (yet) gets 401 — the extension then says "approve me in RDM", not "RDM is not
 /// running" — anything else untrusted gets 403.
 fn guard_with(headers: &HeaderMap, token: &str, access: Access, firefox: impl FnOnce(&str) -> bool) -> Result<(), StatusCode> {
@@ -59,7 +74,7 @@ fn guard_with(headers: &HeaderMap, token: &str, access: Access, firefox: impl Fn
         None if !token.is_empty() && local::token_matches(token, headers.get(local::TOKEN_HEADER).map(|v| v.as_bytes())) => Ok(()),
         None => Err(StatusCode::FORBIDDEN),
         Some(Ok(o)) if o == EXTENSION_ORIGIN || o == STORE_EXTENSION_ORIGIN => Ok(()),
-        Some(Ok(o)) if o.starts_with("moz-extension://") => {
+        Some(Ok(o)) if o.starts_with("moz-extension://") || o.starts_with(SAFARI_SCHEME) => {
             if firefox(o) { Ok(()) } else { Err(StatusCode::UNAUTHORIZED) }
         }
         Some(_) => Err(StatusCode::FORBIDDEN),
@@ -124,6 +139,11 @@ mod tests {
         assert_eq!(guard_with(&h, TOKEN, Access::Act, |o| o == FF), Ok(()));
         // Waiting for the user's approval: 401, told apart from a foreign caller.
         assert_eq!(guard_with(&h, TOKEN, Access::Act, |_| false), Err(StatusCode::UNAUTHORIZED));
+        const SAFARI: &str = "safari-web-extension://0F8E7A1C-3B2D-4E5F-9A8B-7C6D5E4F3A2B";
+        let h = headers(&[("host", "127.0.0.1:9614"), ("origin", SAFARI)]);
+        assert_eq!(guard_with(&h, TOKEN, Access::Act, |o| o == SAFARI), Ok(()));
+        assert_eq!(guard_with(&h, TOKEN, Access::Act, |_| false), Err(StatusCode::UNAUTHORIZED));
+        assert!(is_safari(&h) && has_random_origin(&h));
         // A foreign host is refused before anything is put up for approval.
         let h = headers(&[("host", "evil.example"), ("origin", FF)]);
         assert_eq!(guard_with(&h, TOKEN, Access::Act, |_| panic!("must not ask")), FORBIDDEN);

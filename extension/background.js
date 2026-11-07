@@ -1,7 +1,9 @@
-import { browserKey, downloadName, isCapturable, isHls, isMediaType, isMediaUrl, isModelType, isModelUrl, siteOf } from "./shared.js";
+import { browserKey, downloadName, isCapturable, isSafari, kindOf, sameSite } from "./shared.js";
 
-// Chrome, Brave, Opera, Edge (`chrome`) and Firefox (`browser`): same promise-based API.
+// Chrome, Brave, Opera, Edge (`chrome`), Firefox and Safari (`browser`): same promise-based API.
 const ext = globalThis.browser ?? globalThis.chrome;
+/** Safari: no `downloads` API, and its connector would be our own application's, not RDM's. */
+const SAFARI = isSafari(navigator.userAgent);
 /** The browser's language (English by default, see `_locales`). */
 const t = (key, ...subs) => ext.i18n.getMessage(key, subs.map(String)) || key;
 
@@ -39,6 +41,7 @@ const BROWSER = (async () => {
     const { name = "" } = await info().catch(() => ({}));
     return browserKey(name) || "firefox";
   }
+  if (SAFARI) return "safari";
   // Chromium-based: the browser's own brand, when it gives one (not Brave, Opera: see below).
   const brands = (navigator.userAgentData?.brands ?? []).map((b) => b.brand);
   const ua = navigator.userAgent;
@@ -64,8 +67,11 @@ const NULL_BODY = new Set([204, 205, 304]);
  */
 const UNPAIRED = 401;
 const UNPAIRED_TEXT = t("unpaired");
+/** What the badge shows, as far as this worker knows (it outlives a sleeping worker: set again then). */
+let shownPaired;
 function setPaired(ok) {
-  // No in-memory "already set" shortcut: the badge outlives a sleeping service worker's state.
+  if (shownPaired === ok) return;
+  shownPaired = ok;
   ext.action.setBadgeText({ text: ok ? "" : "!" }).catch(() => {});
   if (!ok) ext.action.setBadgeBackgroundColor({ color: "#d97706" }).catch(() => {});
   ext.action.setTitle({ title: ok ? "RDM" : `RDM — ${UNPAIRED_TEXT}` }).catch(() => {});
@@ -87,7 +93,7 @@ const native = {
 
   connect() {
     if (this.port) return this.port;
-    if (Date.now() < this.downUntil || typeof ext.runtime.connectNative !== "function") return null;
+    if (SAFARI || Date.now() < this.downUntil || typeof ext.runtime.connectNative !== "function") return null;
     let port;
     try {
       port = ext.runtime.connectNative(NATIVE_HOST);
@@ -170,9 +176,12 @@ async function call(path, { method = "GET", body, timeout = 3000 } = {}) {
     // Refused by the connector (an older RDM): the bridge itself.
   }
   let res;
+  // Safari gives this extension another origin at each launch: once approved, RDM's word for it.
+  const { pair } = SAFARI ? await ext.storage.local.get("pair").catch(() => ({})) : {};
   try {
     const headers = { "x-rdm-browser": await BROWSER };
     if (body) headers["content-type"] = "application/json";
+    if (pair) headers["x-rdm-pair"] = pair;
     res = await fetch(`${BRIDGE}${path}`, {
       method,
       body: body && JSON.stringify(body),
@@ -184,6 +193,8 @@ async function call(path, { method = "GET", body, timeout = 3000 } = {}) {
   }
   // GETs carry no `Origin` in Firefox: only a POST tells whether RDM approved this extension.
   if (method === "POST") setPaired(res.status !== UNPAIRED);
+  const given = SAFARI && res.headers.get("x-rdm-pair");
+  if (given && given !== pair) await ext.storage.local.set({ pair: given }).catch(() => {});
   return res;
 }
 
@@ -249,13 +260,16 @@ async function appConfig() {
     if (config?.uninstall === true) {
       // Removed from RDM's window: say so (RDM stops asking), then go.
       await call("/uninstalled", { method: "POST" });
-      await ext.management.uninstallSelf().catch(() => {});
+      await ext.management?.uninstallSelf().catch(() => {}); // Safari: from its settings only
       return null;
     }
     if (typeof config?.captured === "string") {
       await ext.storage.session.set({ [CONFIG]: config }).catch(() => {});
       // Content scripts cannot read session storage: the button's look goes to local storage.
-      await ext.storage.local.set({ mini: config.mini === true }).catch(() => {});
+      const kept = { mini: config.mini === true };
+      // Safari has no `downloads` API: content.js takes over the clicks on these types of links.
+      if (!ext.downloads) kept.links = config.captured;
+      await ext.storage.local.set(kept).catch(() => {});
       return config;
     }
   }
@@ -283,7 +297,8 @@ async function storeOf(tab) {
   if (tab?.cookieStoreId) return tab.cookieStoreId; // Firefox
   if (!tab?.incognito) return undefined; // Chrome: the default store
   const stores = await ext.cookies.getAllCookieStores().catch(() => []);
-  return stores.find((s) => s.tabIds.includes(tab.id))?.id;
+  // Missing permission/a vanished private tab must never fall back to the normal profile's cookies.
+  return stores.find((s) => s.tabIds.includes(tab.id))?.id ?? null;
 }
 
 /**
@@ -291,8 +306,8 @@ async function storeOf(tab) {
  * ones only when the whole chain is same-site. Taken from the page's own store, never another profile's.
  */
 async function cookieHeader(url, { frameUrl, topUrl = frameUrl, storeId } = {}) {
-  const site = siteOf(url);
-  const crossSite = !frameUrl || siteOf(frameUrl) !== site || siteOf(topUrl) !== site;
+  if (storeId === null) return "";
+  const crossSite = !sameSite(url, frameUrl) || !sameSite(url, topUrl);
   const cookies = await ext.cookies.getAll(storeId ? { url, storeId } : { url }).catch(() => []);
   return cookies
     .filter((c) => !(crossSite && c.sameSite === "strict"))
@@ -400,7 +415,7 @@ async function intercept(item) {
   // download that can no longer be paused (a small file already finished) stays the browser's:
   // handing it over too would fetch the same file twice.
   if (!(await ext.downloads.pause(item.id).then(() => true, () => false))) return;
-  const sent = await sendToApp({ url, filename, referrer: item.referrer, storeId: item.cookieStoreId });
+  const sent = await sendToApp({ url, filename, referrer: item.referrer, storeId: item.cookieStoreId }).catch(() => false);
   if (sent === true) {
     await ext.downloads.cancel(item.id).catch(() => {});
     await ext.downloads.erase({ id: item.id }).catch(() => {});
@@ -431,14 +446,14 @@ async function interceptResponse({ url, method, statusCode, responseHeaders, inc
   if (!filename) return {};
   const captured = await captureList();
   if (captured == null || !(isCapturable(captured, filename) || isCapturable(captured, url))) return {};
-  const sent = await sendToApp({ url, filename, referrer: originUrl ?? documentUrl, storeId: cookieStoreId });
+  const sent = await sendToApp({ url, filename, referrer: originUrl ?? documentUrl, storeId: cookieStoreId }).catch(() => false);
   if (sent !== true) return {}; // the browser downloads it (and says why, below)
   toast(t("sentName", filename));
   return { cancel: true };
 }
 
 // `blocking` exists in Firefox only (Chrome MV3 refuses it): elsewhere, onDeterminingFilename below.
-if (!ext.downloads.onDeterminingFilename && ext.webRequest.OnHeadersReceivedOptions?.BLOCKING) {
+if (!ext.downloads?.onDeterminingFilename && ext.webRequest?.OnHeadersReceivedOptions?.BLOCKING) {
   ext.webRequest.onHeadersReceived.addListener(
     interceptResponse,
     { urls: ["http://*/*", "https://*/*"], types: ["main_frame", "sub_frame"] },
@@ -446,14 +461,14 @@ if (!ext.downloads.onDeterminingFilename && ext.webRequest.OnHeadersReceivedOpti
   );
 }
 
-if (ext.downloads.onDeterminingFilename) {
+if (ext.downloads?.onDeterminingFilename) {
   ext.downloads.onDeterminingFilename.addListener((item, suggest) => {
     suggest();
     intercept(item);
   });
 } else {
   // Firefox has no onDeterminingFilename: the download is created with its final name already.
-  ext.downloads.onCreated.addListener(intercept);
+  ext.downloads?.onCreated.addListener(intercept);
 }
 
 // ── Network media sniffing ───────────────────────────────────────────────
@@ -474,15 +489,16 @@ const forget = (tabId) => serially(() => media.clear(tabId));
 // YouTube streams are chunks of a proprietary protocol: resolved in-page instead (youtube.js).
 const isYouTubeStream = (url) => /^https:\/\/[^/?#]+\.googlevideo\.com[:/]/i.test(url);
 
-ext.webRequest.onHeadersReceived.addListener(
+// Safari: only for persistent background pages; without it, the sources the page itself shows.
+ext.webRequest?.onHeadersReceived.addListener(
   ({ tabId, url, statusCode, responseHeaders }) => {
     if (tabId < 0 || statusCode >= 400) return;
     // Cheapest tests first: this runs for every XHR of every tab.
     const type = header(responseHeaders, "content-type") ?? "";
-    const hls = isHls(url, type);
-    const model = !hls && (isModelUrl(url) || isModelType(type));
-    if (!hls && !model && !isMediaType(type) && !isMediaUrl(url)) return;
-    if (isYouTubeStream(url)) return;
+    const kind = kindOf(url, type);
+    if (!kind || isYouTubeStream(url)) return;
+    const hls = kind === "hls";
+    const model = kind === "model";
     const range = header(responseHeaders, "content-range");
     const announced = Number(range?.split("/")[1] ?? header(responseHeaders, "content-length") ?? 0);
     const size = hls || !Number.isFinite(announced) ? 0 : announced;
@@ -559,17 +575,19 @@ function start() {
 
 /**
  * Just installed from RDM's extension window: the tab RDM opened for it (the package, or the
- * extensions page) is closed. Only when RDM says it opened one a moment ago, and only the tab in
- * front if it is that page: its address is hidden from extensions (a browser page), or it is the
- * package. An installation from a store leaves its page alone.
+ * extensions page, the extension's page in the store) is closed. Only when RDM says it opened one a
+ * moment ago, and only the tab in front if it is that page: its address is hidden from extensions
+ * (a browser page), or it is the package or that store page.
  */
 async function closeInstallTab() {
+  if (SAFARI) return; // RDM opened Safari's settings, not a tab; and an address it may not read is no sign
   const res = await call("/installed", { method: "POST" });
   if (!answered(res) || !res.ok) return;
   const { close_tab: close } = await res.json().catch(() => ({}));
   if (close !== true) return;
   const [tab] = await ext.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
-  if (tab?.id != null && (!tab.url || /rdm-firefox[^/]*\.xpi$/i.test(tab.url))) ext.tabs.remove(tab.id).catch(() => {});
+  const ours = /rdm-firefox[^/]*\.xpi$|^https:\/\/chromewebstore\.google\.com\/detail\/.*adoaoaomelojpakojcmkaclkhopkeljp/i;
+  if (tab?.id != null && (!tab.url || ours.test(tab.url))) ext.tabs.remove(tab.id).catch(() => {});
 }
 
 ext.runtime.onInstalled.addListener(({ reason }) => {

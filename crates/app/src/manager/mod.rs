@@ -82,7 +82,8 @@ pub struct Manager {
     /// Held while a new download's file name is chosen: the disk is looked at outside the list's
     /// lock (the window reads the list at every frame), and two names chosen at once could
     /// otherwise be the same. Taken before `entries`, never while holding it.
-    naming: Mutex<()>,
+    /// Removed downloads keep their names reserved here until their writers and cleanup finish.
+    naming: Mutex<Vec<files::Planned>>,
     /// Downloads whose engine task is still alive (even if already paused): never start a second
     /// task on the same file, never delete files under a task that is still writing them.
     busy: Mutex<HashSet<DownloadId>>,
@@ -126,8 +127,8 @@ pub struct Manager {
     /// Browsers RDM just opened on the extension's package or page, and when: the tab it opened is
     /// closed once the extension is installed (see `Manager::installed_by_rdm`).
     opened_to_install: Mutex<HashMap<String, Instant>>,
-    /// A browser started without the extension and the user asked to install it (or, on Windows,
-    /// where toasts cannot answer, RDM offers it in its window): the extension window opens on it.
+    /// RDM started the extension's installation in this browser on its own, and it takes more than
+    /// the browser's own prompt: the extension window opens on it.
     extension_offer: Mutex<Option<Browser>>,
 }
 

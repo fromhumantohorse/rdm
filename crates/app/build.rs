@@ -6,7 +6,9 @@ use std::{
 
 fn main() {
     embed_extension();
-    if std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "windows") {
+    // Not a cross-build's GNU flavour, without Microsoft's resource tools: it links its icon itself.
+    let var = |name: &str, value: &str| std::env::var(name).is_ok_and(|v| v == value);
+    if var("CARGO_CFG_TARGET_OS", "windows") && var("CARGO_CFG_TARGET_ENV", "msvc") {
         println!("cargo:rerun-if-changed=assets/rdm.ico");
         let mut res = winresource::WindowsResource::new();
         res.set_icon("assets/rdm.ico").set("ProductName", "RDM").set("FileDescription", "Rust Download Manager");

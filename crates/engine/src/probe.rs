@@ -33,7 +33,7 @@ pub struct Probe {
 /// (Apache puts the inode in it). A weak `ETag` (`W/…`) says nothing about the bytes, and neither
 /// does a date that is the moment of the answer: download scripts stamp every response "now",
 /// which would make every resume start over.
-fn version_of(headers: &HeaderMap) -> Option<String> {
+pub(crate) fn version_of(headers: &HeaderMap) -> Option<String> {
     let text = |name| headers.get(name).and_then(|v| v.to_str().ok()).map(str::trim).filter(|v| !v.is_empty());
     let answered = text(header::DATE).and_then(|d| httpdate::parse_http_date(d).ok());
     let stamped_now = |modified: &str| match (httpdate::parse_http_date(modified), answered) {
@@ -66,6 +66,8 @@ enum Ask {
     Facts,
     /// `bytes=0-`: the facts, and the answer kept — its body is the file from its first byte.
     Data,
+    /// No `Range` at all (see [`refuses_ranges`]), the answer kept likewise.
+    Plain,
 }
 
 /// One `Range: bytes=0-0` request reveals size, range support and file name at once.
@@ -81,7 +83,7 @@ pub(crate) async fn open(client: &Client, url: &Url, headers: &HeaderMap) -> Res
 }
 
 async fn first(client: &Client, url: &Url, headers: &HeaderMap, ask: Ask) -> Result<(Probe, Option<Response>), EngineError> {
-    let (mut attempt, mut other_tried) = (1, false);
+    let (mut attempt, mut other_tried, mut plain_tried) = (1, false, false);
     loop {
         let (err, retry_after) = match attempt_probe(client, url, headers, ask).await {
             Ok(found) => return Ok(found),
@@ -90,6 +92,12 @@ async fn first(client: &Client, url: &Url, headers: &HeaderMap, ask: Ask) -> Res
         if !other_tried && refused_identity(&err) {
             other_tried = true;
             if let Some(found) = with_other_agent(client, url, headers, ask).await {
+                return Ok(found);
+            }
+        }
+        if ask == Ask::Data && !plain_tried && refuses_ranges(&err) {
+            plain_tried = true;
+            if let Ok(found) = attempt_probe(client, url, headers, Ask::Plain).await {
                 return Ok(found);
             }
         }
@@ -121,6 +129,12 @@ fn refused_identity(err: &EngineError) -> bool {
     }
 }
 
+/// Whether the server may have refused the `Range` header rather than the file: some answer an
+/// error to any range, where they would serve the file to a plain request (on one connection then).
+fn refuses_ranges(err: &EngineError) -> bool {
+    matches!(err, EngineError::Http(e) if e.status().is_some_and(|s| matches!(s.as_u16(), 400 | 403 | 405 | 406 | 416 | 501)))
+}
+
 /// The request again as a common download tool ([`FALLBACK_AGENT`]); `None` if refused too.
 async fn with_other_agent(client: &Client, url: &Url, headers: &HeaderMap, ask: Ask) -> Option<(Probe, Option<Response>)> {
     let agent = HeaderValue::from_static(FALLBACK_AGENT);
@@ -136,24 +150,27 @@ async fn with_other_agent(client: &Client, url: &Url, headers: &HeaderMap, ask: 
 
 /// One attempt; a refusal comes with the wait the server asked for (`Retry-After`).
 async fn attempt_probe(client: &Client, url: &Url, headers: &HeaderMap, ask: Ask) -> Result<(Probe, Option<Response>), (EngineError, Option<Duration>)> {
-    let range = if ask == Ask::Data { "bytes=0-" } else { "bytes=0-0" };
-    let res = client
-        .get(url.clone())
-        .headers(headers.clone())
-        .header(header::RANGE, range)
-        .send()
-        .await
-        .map_err(|e| (e.into(), None))?;
+    let request = client.get(url.clone()).headers(headers.clone());
+    let request = match ask {
+        Ask::Facts => request.header(header::RANGE, "bytes=0-0"),
+        Ask::Data => request.header(header::RANGE, "bytes=0-"),
+        Ask::Plain => request,
+    };
+    let res = request.send().await.map_err(|e| (e.into(), None))?;
     let retry_after = crate::retry_after(res.headers());
     let res = res.error_for_status().map_err(|e| (e.into(), retry_after))?;
 
     let h = res.headers();
     let partial = res.status() == StatusCode::PARTIAL_CONTENT;
     let size = if partial {
-        h.get(header::CONTENT_RANGE)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.rsplit('/').next())
-            .and_then(|v| v.parse().ok())
+        let Some((0, _, total)) = crate::content_range(h) else {
+            return Err((EngineError::RangeIgnored, None));
+        };
+        // A partial response of unknown total length cannot establish the end of the file.
+        if ask != Ask::Facts && total.is_none() {
+            return Err((EngineError::RangeIgnored, None));
+        }
+        total
     } else {
         res.content_length()
     };
@@ -171,10 +188,10 @@ async fn attempt_probe(client: &Client, url: &Url, headers: &HeaderMap, ask: Ask
         file_name = format!("{stem}.ts");
     }
     let mut probe = Probe { size, ranges: ranges && size.is_some() && !hls, file_name, hls, version, agent: None };
-    if ask == Ask::Data {
+    if ask != Ask::Facts {
         // The whole file, without a word about parts: asked for a small part, many a server still
         // serves one (several connections are then possible). Not worth asking for a small file.
-        if !probe.ranges && !hls && size.is_some_and(|s| s >= WORTH_PARTS) {
+        if ask == Ask::Data && !probe.ranges && !hls && size.is_some_and(|s| s >= WORTH_PARTS) {
             probe.ranges = Box::pin(attempt_probe(client, url, headers, Ask::Facts)).await.is_ok_and(|(facts, _)| facts.ranges && facts.size == size);
         }
         return Ok((probe, Some(res)));
@@ -246,11 +263,7 @@ fn decode_ext_value(v: &str) -> Option<String> {
     let mut parts = v.splitn(3, '\'');
     let (charset, _lang, value) = (parts.next()?, parts.next()?, parts.next()?);
     let bytes: Vec<u8> = percent_encoding::percent_decode_str(value).collect();
-    Some(if charset.eq_ignore_ascii_case("iso-8859-1") {
-        bytes.iter().map(|&b| char::from(b)).collect()
-    } else {
-        String::from_utf8_lossy(&bytes).into_owned()
-    })
+    Some(if charset.eq_ignore_ascii_case("iso-8859-1") { bytes.iter().map(|&b| char::from(b)).collect() } else { String::from_utf8_lossy(&bytes).into_owned() })
 }
 
 fn percent_decode(s: &str) -> String {

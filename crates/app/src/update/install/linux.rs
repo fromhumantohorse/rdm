@@ -2,7 +2,7 @@
 
 use std::{os::unix::fs::PermissionsExt, process::Command};
 
-use super::{Method, UpdateError, Verified, startup_exe, unchanged, which};
+use super::{Method, TARBALL, UpdateError, Verified, startup_exe, unchanged, which};
 
 pub fn install(method: Method, package: &Verified) -> Result<(), UpdateError> {
     match method {
@@ -72,7 +72,7 @@ fn replace_binary(package: &Verified) -> Result<(), UpdateError> {
     std::fs::create_dir_all(&work)?;
     let result = (|| {
         let ok = Command::new("tar").arg("-xzf").arg(archive).arg("-C").arg(&work).status().is_ok_and(|s| s.success());
-        let new = work.join("rdm-linux-x64").join("rdm");
+        let new = work.join(TARBALL.trim_end_matches(".tar.gz")).join("rdm");
         let elf = std::fs::read(&new).is_ok_and(|b| b.starts_with(b"\x7fELF"));
         if !ok || !elf {
             return Err(UpdateError::UnreadableArchive);

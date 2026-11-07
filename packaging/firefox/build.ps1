@@ -8,10 +8,10 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $src = Join-Path $root 'extension'
 if (-not $Out) { $Out = Join-Path $root 'target\firefox' }
 
-if (Test-Path $Out) { Remove-Item $Out -Recurse -Force }
-New-Item -ItemType Directory -Force $Out | Out-Null
+. (Join-Path $PSScriptRoot '..\output-path.ps1')
+$Out = Initialize-ExtensionOutput -Root $root -Output $Out
 Copy-Item (Join-Path $src '*') $Out -Recurse -Force
-Remove-Item (Join-Path $Out 'test') -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath (Join-Path $Out 'test') -Recurse -Force -ErrorAction SilentlyContinue
 
 $manifest = [IO.File]::ReadAllText((Join-Path $src 'manifest.json'))
 $manifest = $manifest.Replace('"service_worker": "background.js"', '"scripts": ["background.js"]')

@@ -21,15 +21,26 @@ jobs:
         include:
           - os: windows-latest
             artifact: rdm-windows
+            arch: x64
+          # Native on Windows on ARM (Snapdragon…), where an x64 program would run emulated.
+          - os: windows-11-arm
+            artifact: rdm-windows-arm64
+            arch: arm64
           # The oldest supported Ubuntu: the binary needs at least the glibc it was built against,
           # and runs on every distribution newer than this one.
           - os: ubuntu-22.04
             artifact: rdm-linux
+            arch: x64
+          - os: ubuntu-22.04-arm
+            artifact: rdm-linux-arm64
+            arch: arm64
           # Apple Silicon: the binary is native on the M1 and every later chip (no Rosetta).
           - os: macos-latest
             artifact: rdm-macos
+            arch: arm64
     runs-on: ${{ matrix.os }}
     env:
+      ARCH: ${{ matrix.arch }}
       MACOSX_DEPLOYMENT_TARGET: "11.0" # the first macOS on Apple Silicon: see packaging/macos/Info.plist
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -41,31 +52,36 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
-      - run: cargo build --release -p rdm
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - run: cargo test --locked --workspace
+      - run: cargo build --locked --release -p rdm
 
+      # Once is enough for what does not depend on the architecture.
       - name: Extension checks (syntax + unit tests)
-        if: runner.os == 'Linux'
+        if: matrix.artifact == 'rdm-linux'
         run: sh extension/test/check.sh
 
       # web-ext and every package under it are pinned with their integrity hashes
       # (packaging/web-ext/package-lock.json): the signing step below runs it with the AMO keys.
       # No install script runs.
       - name: Extension builds (Firefox + Chromium) + lint
-        if: runner.os == 'Linux'
+        if: matrix.artifact == 'rdm-linux'
+        env:
+          NODE_OPTIONS: --disable-proto=throw
         run: |
           sh packaging/firefox/build.sh
           sh packaging/chromium/build.sh
           npm ci --ignore-scripts --no-audit --no-fund --prefix packaging/web-ext
+          node --disable-proto=throw --test packaging/web-ext/security.test.cjs
+          npm audit --audit-level=moderate --ignore-scripts --prefix packaging/web-ext
           packaging/web-ext/node_modules/.bin/web-ext lint --self-hosted --source-dir target/firefox
 
       - name: Dependency audit (RustSec)
-        if: runner.os == 'Linux'
+        if: matrix.artifact == 'rdm-linux'
         run: cargo install cargo-audit --version 0.22.2 --locked && cargo audit
 
       - name: Dependency policy (licenses, sources, advisories)
-        if: runner.os == 'Linux'
+        if: matrix.artifact == 'rdm-linux'
         run: cargo install cargo-deny --version 0.20.2 --locked && cargo deny check
 
       - name: Debian package
@@ -86,7 +102,12 @@ jobs:
           $hash = (Get-FileHash $zip -Algorithm SHA256).Hash
           if ($hash -ne '6AC824E1642D6F7277D0ED7EA09411A508F6116BA6FAE0AA5F2C7DAA2FF43D31') { throw "unexpected WiX archive ($hash)" }
           Expand-Archive $zip "$env:LOCALAPPDATA\Programs\wix3"
-          powershell -ExecutionPolicy Bypass -File packaging/windows/build-msi.ps1 -NoBuild
+          powershell -ExecutionPolicy Bypass -File packaging/windows/build-msi.ps1 -NoBuild -Arch $env:ARCH
+
+      # Only Xcode can build it; build-app.sh puts it in RDM.app.
+      - name: Safari extension
+        if: runner.os == 'macOS'
+        run: sh packaging/safari/build.sh
 
       - name: macOS application and disk image
         if: runner.os == 'macOS'
@@ -97,16 +118,20 @@ jobs:
         run: |
           mkdir dist
           if [ "$RUNNER_OS" = Windows ]; then
-            cp RDM-*-x64-setup.msi target/release/rdm.exe packaging/windows/install.ps1 dist/
+            cp RDM-*-setup.msi target/release/rdm.exe packaging/windows/install.ps1 dist/
           elif [ "$RUNNER_OS" = macOS ]; then
             cp RDM-*-macos-arm64.dmg dist/
           else
-            mkdir rdm-linux-x64
-            cp target/release/rdm crates/app/assets/rdm.png rdm-linux-x64/ && cp -r packaging/linux/. rdm-linux-x64/
-            tar -czf dist/rdm-linux-x64.tar.gz rdm-linux-x64
+            # Its top folder is what update/install/linux.rs looks for.
+            tarball="rdm-linux-$ARCH"
+            mkdir "$tarball"
+            cp target/release/rdm crates/app/assets/rdm.png "$tarball/" && cp -r packaging/linux/. "$tarball/"
+            tar -czf "dist/$tarball.tar.gz" "$tarball"
             cp target/debian/*.deb target/generate-rpm/*.rpm dist/
-            cp target/rdm-chromium.zip dist/
-            (cd target/firefox && zip -qr ../../dist/rdm-firefox.xpi .)
+            if [ -f target/rdm-chromium.zip ]; then
+              cp target/rdm-chromium.zip dist/
+              (cd target/firefox && zip -qr ../../dist/rdm-firefox.xpi .)
+            fi
           fi
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -134,6 +159,7 @@ jobs:
           path: unsigned
       - name: Sign the Firefox package
         env:
+          NODE_OPTIONS: --disable-proto=throw
           AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
           AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
         run: |
@@ -174,14 +200,15 @@ jobs:
       - name: Collect the packages (the signed Firefox package replaces the unsigned one)
         run: |
           mkdir dist
-          cp artifacts/rdm-windows/* artifacts/rdm-linux/* artifacts/rdm-macos/* dist/
+          cp artifacts/rdm-windows/* artifacts/rdm-windows-arm64/* artifacts/rdm-linux/* artifacts/rdm-linux-arm64/* artifacts/rdm-macos/* dist/
           if [ -f artifacts/rdm-firefox-signed/rdm-firefox.xpi ]; then
             cp artifacts/rdm-firefox-signed/rdm-firefox.xpi dist/rdm-firefox.xpi
           fi
 
       - name: Every package is there
         run: |
-          for pattern in 'dist/*.msi' 'dist/*.deb' 'dist/*.rpm' 'dist/*.dmg' dist/rdm-linux-x64.tar.gz dist/rdm-chromium.zip dist/rdm-firefox.xpi; do
+          for pattern in 'dist/*-x64-setup.msi' 'dist/*-arm64-setup.msi' 'dist/*_amd64.deb' 'dist/*_arm64.deb' 'dist/*.x86_64.rpm' 'dist/*.aarch64.rpm' \
+            'dist/*.dmg' dist/rdm-linux-x64.tar.gz dist/rdm-linux-arm64.tar.gz dist/rdm-chromium.zip dist/rdm-firefox.xpi; do
             compgen -G "$pattern" >/dev/null || { echo "::error::missing $pattern"; exit 1; }
           done
 

@@ -51,10 +51,9 @@ async fn fetch_small(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, Upd
         }
         let res = client.get(url).timeout(Duration::from_secs(30)).send().await.and_then(reqwest::Response::error_for_status);
         if let Ok(res) = res
-            && let Ok(bytes) = res.bytes().await
-            && bytes.len() <= 1024
+            && let Ok(bytes) = crate::http::read_limited(res, 1024).await
         {
-            return Ok(bytes.to_vec());
+            return Ok(bytes);
         }
     }
     Err(UpdateError::SignatureUnavailable)
