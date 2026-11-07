@@ -10,9 +10,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/fromhumantohorse/rdm/releases/latest"><img src="https://img.shields.io/github/v/release/vincentxjoubert-lang/rdm?label=version&color=6a5cff" alt="Version"></a>
-  <a href="https://github.com/fromhumantohorse/rdm/releases"><img src="https://img.shields.io/github/downloads/vincentxjoubert-lang/rdm/total?color=3d8bff" alt="Downloads"></a>
-  <a href="https://github.com/fromhumantohorse/rdm/actions"><img src="https://img.shields.io/github/actions/workflow/status/vincentxjoubert-lang/rdm/release.yml?label=build" alt="Build"></a>
+  <a href="https://github.com/fromhumantohorse/rdm/releases/latest"><img src="https://img.shields.io/github/v/release/fromhumantohorse/rdm?label=version&color=6a5cff" alt="Version"></a>
+  <a href="https://github.com/fromhumantohorse/rdm/releases"><img src="https://img.shields.io/github/downloads/fromhumantohorse/rdm/total?color=3d8bff" alt="Downloads"></a>
+  <a href="https://github.com/fromhumantohorse/rdm/actions"><img src="https://img.shields.io/github/actions/workflow/status/fromhumantohorse/rdm/release.yml?label=build" alt="Build"></a>
   <img src="https://img.shields.io/badge/Rust-2024-b24cff" alt="Rust">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-34d399" alt="MIT"></a>
 </p>
@@ -54,7 +54,7 @@ RDM speaks **16 languages** (English, French, Spanish, German, Italian, Portugue
 - **Stragglers**: a connection far slower than the others from its start (a bad route, a busy server behind the load balancer), or silent while the others receive, is closed and replaced at once; its piece goes to the others — the end of a download no longer waits for one slow connection.
 - **Queues**: the main queue plus **named queues**, each with its own number of simultaneous downloads (right-click a download → *Move to*).
 - **Speed limits**: a global one, and one **per download** (right-click → *Limit the speed…*), applied at once.
-- **Change the link** of a download (right-click → *Change the link…*) without losing what is already downloaded: for an expired or moved link. RDM checks that the new link serves the same file (same size) before using it.
+- **Change the link** of a download (right-click → *Change the link…*) without losing what is already downloaded: for an expired or moved link. RDM checks that the new link serves the same file (same size) before using it. The old link's cookies do not follow it to another site, nor an accepted certificate to another host.
 - **If the file already exists**: ask (the default: RDM comes to the front, keep both or replace — for browser downloads and pasted or copied links alike), rename (`name (1).ext`), overwrite, or skip — your choice in the settings.
 - **Checksums**: paste the MD5, SHA-1, SHA-256 or SHA-512 published by a site (right-click → *Verify a checksum…*): RDM checks the file as soon as it is complete and tells you if it does not match.
 - **Proxies**: none, the system's, or your own (HTTP, HTTPS, SOCKS5, SOCKS4a; with `socks5h://` names are resolved by the proxy), with a **Test** button — and an **automatic mode**: direct first, and a download that is blocked or very slow switches to the proxy by itself. A proxy address RDM cannot use is an error: RDM never goes around it.
@@ -166,7 +166,7 @@ If RDM is closed, the browser downloads normally.
 The ⬇ menu offers these methods:
 
 1. **Direct download** (a few seconds): the extension asks YouTube's player API from the page, with the browser's session, through several client profiles. RDM **checks every link, from the first to the last byte**, before showing it: YouTube sometimes serves the start of a file then refuses the rest (403) when its anti-bot token is missing. Only fully downloadable links are offered, with picture and sound merged without re-encoding.
-2. **YouTube module** (optional, when YouTube refuses the direct links): installed on request from the menu, once (about 300 MB in the user's own data folder, no administrator rights): [yt-dlp](https://github.com/yt-dlp/yt-dlp), [Deno](https://deno.com) for YouTube's JavaScript challenges and [bgutil](https://github.com/Brainicism/bgutil-ytdlp-pot-provider), which generates YouTube's anti-bot (proof-of-origin) token locally. Nothing runs unchecked: yt-dlp's checksum list must carry the signature of yt-dlp's own key (written in RDM), and Deno, bgutil and its drawing library are exact versions checked against SHA-256 values written in RDM; no package's install script runs. yt-dlp only resolves the links; RDM verifies and downloads them like the others.
+2. **YouTube module** (optional, when YouTube refuses the direct links): installed on request from the menu, once (about 300 MB in the user's own data folder, no administrator rights): [yt-dlp](https://github.com/yt-dlp/yt-dlp), [Deno](https://deno.com) for YouTube's JavaScript challenges and [bgutil](https://github.com/Brainicism/bgutil-ytdlp-pot-provider), which generates YouTube's anti-bot (proof-of-origin) token locally. Nothing runs unchecked: yt-dlp's checksum list must carry the signature of yt-dlp's own key (written in RDM), and Deno, bgutil and its drawing library are exact versions checked against SHA-256 values written in RDM; no package's install script runs. yt-dlp only resolves the links; RDM verifies and downloads them like the others. When YouTube refuses it, RDM brings yt-dlp up to date for the next try (at most once a day, checked the same way).
 3. **Recording** (always available, about half the video's duration): the page reloads in recording mode, the video plays muted at 2× (YouTube's own speed setting), in the best quality, and RDM receives exactly the data YouTube's player receives. No token is forged and no protection is bypassed. Ads are not recorded. A banner shows the progress and can cancel.
 
 Not supported: DRM content (Netflix, Widevine, FairPlay) and merging WebM streams (VP9/Opus). Recording forces the player to MP4 (H.264/AV1 + AAC).

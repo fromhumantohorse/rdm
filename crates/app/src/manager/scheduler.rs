@@ -17,9 +17,6 @@ impl Manager {
     /// marking them running happen under one lock: concurrent calls can never start one twice nor
     /// exceed the limit.
     pub(super) fn schedule(self: &Arc<Self>) {
-        if self.is_closing() {
-            return;
-        }
         // Each queue has its own number of places; a download of an unknown queue counts as the
         // main queue's.
         let (limits, main_limit) = self.with_settings(|s| {
@@ -31,6 +28,11 @@ impl Manager {
         let now = Instant::now();
         let launches: Vec<Launch> = {
             let mut entries = lock(&self.entries);
+            // Under the list's lock: shutdown says it is closing, then cancels what the list holds.
+            // A download started here is either seen by it, or never started.
+            if self.is_closing() {
+                return;
+            }
             let mut busy = lock(&self.busy);
             let mut running: HashMap<u32, usize> = HashMap::new();
             for e in entries.iter().filter(|e| e.occupies_slot()) {

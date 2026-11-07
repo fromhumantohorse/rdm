@@ -25,15 +25,11 @@ hicolor="$data/icons/hicolor"
 deps=1
 autostart=0
 
-# Where RDM registers the browser extension's connector (native messaging host) at start.
+# Where RDM registers the browser extension's connector (native messaging host) at start, for every
+# browser it finds: `discovered` in crates/app/src/native/register.rs.
 native_hosts() {
-    for d in .config/google-chrome/NativeMessagingHosts .config/google-chrome-beta/NativeMessagingHosts \
-        .config/chromium/NativeMessagingHosts .config/BraveSoftware/Brave-Browser/NativeMessagingHosts \
-        .config/microsoft-edge/NativeMessagingHosts .config/vivaldi/NativeMessagingHosts \
-        .config/opera/NativeMessagingHosts .mozilla/native-messaging-hosts .waterfox/native-messaging-hosts \
-        .librewolf/native-messaging-hosts; do
-        printf '%s\n' "$HOME/$d/rdm.bridge.json"
-    done
+    find "$HOME/.config" -maxdepth 4 -path '*/NativeMessagingHosts/rdm.bridge.json' 2>/dev/null || true
+    find "$HOME" -maxdepth 3 -path '*/.*/native-messaging-hosts/rdm.bridge.json' 2>/dev/null || true
 }
 
 # Whether RDM itself runs (the browsers' connectors run the same binary: not counted).

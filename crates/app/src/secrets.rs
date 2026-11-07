@@ -62,7 +62,12 @@ impl Secrets {
             settings::create_private_dir(dir)?;
         }
         let tmp = settings::with_suffix(path, ".tmp");
-        settings::write_private(&tmp, &sealed).and_then(|()| std::fs::rename(tmp, path))
+        let written = settings::write_private(&tmp, &sealed).and_then(|()| std::fs::rename(&tmp, path));
+        // Passwords left behind under another name: in clear, outside Windows.
+        if written.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        written
     }
 
     /// RDM 0.3.7 and older kept the VirusTotal key in the settings, in clear: it moves here once

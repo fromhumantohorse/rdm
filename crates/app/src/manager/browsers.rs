@@ -122,7 +122,7 @@ async fn in_chrome_store(client: &reqwest::Client) -> bool {
     let id = crate::bridge::STORE_EXTENSION_ORIGIN.trim_start_matches("chrome-extension://");
     let url = format!("https://clients2.google.com/service/update2/crx?response=updatecheck&acceptformat=crx3&prodversion=140.0&x=id%3D{id}%26uc");
     match client.get(url).timeout(Duration::from_secs(8)).send().await {
-        Ok(answer) => answer.text().await.is_ok_and(|text| store_gives_a_package(&text)),
+        Ok(answer) => crate::http::read_limited(answer, 1 << 20).await.is_ok_and(|text| store_gives_a_package(&String::from_utf8_lossy(&text))),
         Err(_) => false,
     }
 }

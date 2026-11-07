@@ -6,6 +6,8 @@ use super::*;
 /// The command-line flag of the installation assistant: `rdm --apply-update <msi> <pid> <exe>
 /// <sha256>` (the package's SHA-256, checked again just before installing it).
 pub const HELPER_FLAG: &str = "--apply-update";
+/// What the assistant's folder is named after, in the temporary folder.
+const HELPER_PREFIX: &str = "rdm-updater-";
 
 /// Where the Windows installer puts RDM (per user).
 pub fn installed_exe() -> Option<PathBuf> {
@@ -23,8 +25,12 @@ pub fn installed_exe() -> Option<PathBuf> {
 /// right after.
 pub fn start_installation(msi: &Verified) -> Result<(), UpdateError> {
     let target = installed_exe().ok_or(UpdateError::NotHere)?;
-    let helper = std::env::temp_dir().join(format!("rdm-updater-{}.exe", std::process::id()));
+    // In a folder of its own: a program looks for its libraries beside itself first, and the
+    // temporary folder holds whatever other programs leave there.
+    let dir = std::env::temp_dir().join(format!("{HELPER_PREFIX}{}", std::process::id()));
+    let helper = dir.join("rdm-updater.exe");
     let start = || {
+        std::fs::create_dir_all(&dir)?;
         std::fs::copy(startup_exe().map_or_else(std::env::current_exe, |p| Ok(p.to_path_buf()))?, &helper)?;
         let mut command = std::process::Command::new(&helper);
         command.arg(HELPER_FLAG).arg(&msi.path).arg(std::process::id().to_string()).arg(&target).arg(&msi.sha256);
@@ -83,19 +89,27 @@ pub(super) fn work_dir() -> std::io::Result<PathBuf> {
 /// At start: leftovers of a previous update (package, assistant copy, old logs). Files still in
 /// use (an assistant finishing its job) are left for next time.
 pub fn clean_leftovers() {
-    let Ok(dir) = work_dir().and_then(std::fs::read_dir) else { return };
+    if let Ok(dir) = work_dir() {
+        clean(&dir);
+    }
+}
+
+fn clean(dir: &Path) {
+    let Ok(dir) = std::fs::read_dir(dir) else { return };
     let week = Duration::from_secs(7 * 24 * 3600);
     for entry in dir.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         let old = || entry.metadata().and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|age| age > week));
         let update = name.starts_with("rdm-update-");
-        let leftover = name.starts_with("rdm-updater-") && name.ends_with(".exe")
+        let helper = name.starts_with(HELPER_PREFIX);
+        // Beside its folder: where an older RDM left it.
+        let leftover = helper && name.ends_with(".exe")
             || update && [".msi", ".tmp", ".tar.gz", ".deb", ".rpm"].iter().any(|e| name.ends_with(e))
             || update && name.ends_with(".log") && old();
         if leftover {
             let _ = std::fs::remove_file(entry.path());
-        } else if update && entry.file_type().is_ok_and(|t| t.is_dir()) {
-            let _ = std::fs::remove_dir_all(entry.path()); // an unpacked tarball (Linux)
+        } else if (update || helper) && entry.file_type().is_ok_and(|t| t.is_dir()) {
+            let _ = std::fs::remove_dir_all(entry.path()); // an unpacked tarball (Linux), the assistant's folder
         }
     }
 }
@@ -135,6 +149,25 @@ mod tests {
         assert!(!run_assistant(&["--minimized".into()]));
         assert!(!run_assistant(&["--other".into(), "a".into(), "1".into(), "b".into(), "c".into()]));
         assert!(!run_assistant(&[HELPER_FLAG.into(), "a.msi".into(), "1".into(), "rdm.exe".into()]), "the SHA-256 is required");
+    }
+
+    #[test]
+    fn only_an_updates_own_leftovers_are_cleaned() {
+        let dir = std::env::temp_dir().join(format!("rdm-leftovers-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("rdm-updater-12")).unwrap();
+        std::fs::create_dir_all(dir.join("rdm-update-34")).unwrap();
+        std::fs::create_dir_all(dir.join("another-folder")).unwrap();
+        std::fs::write(dir.join("rdm-updater-12").join("rdm-updater.exe"), b"").unwrap();
+        for file in ["rdm-updater-56.exe", "rdm-update-0.3.14.msi", "rdm-update-0.3.14.log", "someone-elses.msi"] {
+            std::fs::write(dir.join(file), b"").unwrap();
+        }
+
+        clean(&dir);
+
+        let mut left: Vec<String> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        left.sort();
+        assert_eq!(left, ["another-folder", "rdm-update-0.3.14.log", "someone-elses.msi"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The package is checked again at the last moment against the SHA-256 its signature covers.

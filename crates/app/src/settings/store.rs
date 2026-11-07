@@ -99,9 +99,13 @@ pub fn write_if_changed(path: &Path, bytes: &[u8]) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
-    let tmp = with_suffix(path, ".tmp");
-    fs::write(&tmp, bytes)?;
-    fs::rename(tmp, path)
+    // A name of its own: the same file may be written twice at once (at start, by an installation).
+    let tmp = with_suffix(path, &format!(".{}.tmp", uuid::Uuid::new_v4().simple()));
+    let written = fs::write(&tmp, bytes).and_then(|()| fs::rename(&tmp, path));
+    if written.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    written
 }
 
 /// RDM's settings folder, private to the user on Linux and macOS (0700, like `~/.ssh`): the download
@@ -154,6 +158,22 @@ mod tests {
         fs::set_permissions(&nested, fs::Permissions::from_mode(0o755)).unwrap();
         create_private_dir(&nested).unwrap();
         assert_eq!(fs::metadata(&nested).unwrap().permissions().mode() & 0o777, 0o700, "an older, readable one is fixed");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_is_written_once_and_nothing_stays_beside_it() {
+        let dir = std::env::temp_dir().join(format!("rdm-written-{}", uuid::Uuid::new_v4()));
+        let path = dir.join("nested").join("manifest.json");
+
+        write_if_changed(&path, b"one").unwrap();
+        write_if_changed(&path, b"two").unwrap();
+
+        assert_eq!(fs::read(&path).unwrap(), b"two");
+        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+        fs::create_dir(path.with_file_name("a folder")).unwrap();
+        assert!(write_if_changed(&path.with_file_name("a folder"), b"three").is_err());
+        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 2, "not even after a failure");
         let _ = fs::remove_dir_all(&dir);
     }
 

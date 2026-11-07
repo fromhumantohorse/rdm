@@ -171,7 +171,12 @@ impl Manager {
     /// The links of YouTube video `id`, read by the YouTube module on the route their download
     /// takes: YouTube binds them to the address that reads them.
     pub async fn youtube_links(&self, id: &str) -> Result<crate::ytdlp::Formats, crate::ytdlp::ModuleError> {
-        crate::ytdlp::extract(id, &self.route(false)).await
+        let route = self.route(false);
+        let links = crate::ytdlp::extract(id, &route).await;
+        if matches!(links, Err(crate::ytdlp::ModuleError::Refused(_))) {
+            crate::ytdlp::refresh(&self.rt, route);
+        }
+        links
     }
 
     /// Has VirusTotal analyse a finished file (looked up by hash first, uploaded only if unknown),

@@ -84,7 +84,8 @@
     return `${(n / 1024 ** i).toFixed(i ? 1 : 0)} ${units[i]}`;
   };
   const safeName = (s, fallback = "video") =>
-    s.replace(/[<>:"/\\|?*\p{Cc}]/gu, "_").replace(/\s+/g, " ").trim().slice(0, 150) || fallback;
+    // The cut can fall inside an emoji: half of one is not JSON RDM can read, and the download is refused.
+    s.replace(/[<>:"/\\|?*\p{Cc}]/gu, "_").replace(/\s+/g, " ").trim().slice(0, 150).replace(/\p{Cs}/gu, "") || fallback;
   const pageTitle = () => safeName(top === self ? document.title : "");
   const nameOf = (url) => {
     const { pathname, hostname } = new URL(url);

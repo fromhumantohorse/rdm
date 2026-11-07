@@ -96,7 +96,8 @@ impl Manager {
     pub fn change_url(self: &Arc<Self>, id: DownloadId, url: Url) {
         let Some((total, headers, via_proxy, insecure, split)) = self.view(|es| {
             es.iter().find(|e| e.download.id == id).map(|e| {
-                (e.progress.total.load(Relaxed), to_header_map(&e.headers), e.via_proxy, e.download.insecure, e.download.audio.is_some())
+                let same_host = e.download.url.host_str() == url.host_str();
+                (e.progress.total.load(Relaxed), e.headers_for(&url), e.via_proxy, e.download.insecure && same_host, e.download.audio.is_some())
             })
         }) else {
             return;
@@ -121,7 +122,7 @@ impl Manager {
                 if e.download.is_recording() || *e.download.status() == Status::Completed {
                     return false;
                 }
-                e.download.url = url.clone();
+                e.moved_to(url.clone());
                 e.retries = 0;
                 e.retry = None;
                 match e.download.status() {

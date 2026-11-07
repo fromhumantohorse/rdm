@@ -282,7 +282,7 @@ fn site(host: &str) -> String {
 /// login) stay within `from`'s site. A playlist may point anywhere: its segments on another site
 /// must not receive them — what browsers do, and what the HTTP client does on redirects. Given
 /// over HTTPS, they never travel in clear either: an `http://` segment of the same site gets none.
-pub(crate) fn headers_for<'h>(headers: &'h HeaderMap, from: &Url, to: &Url) -> Cow<'h, HeaderMap> {
+pub fn headers_for<'h>(headers: &'h HeaderMap, from: &Url, to: &Url) -> Cow<'h, HeaderMap> {
     let downgrade = from.scheme() == "https" && to.scheme() != "https";
     let strip_cookie = (!same_site(from, to) || downgrade) && headers.contains_key(header::COOKIE);
     // HTTP authentication is scoped to an origin, not a registrable domain: a sibling host or

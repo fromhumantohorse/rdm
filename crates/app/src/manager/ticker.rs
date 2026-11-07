@@ -37,8 +37,9 @@ impl Manager {
                     let (done, total, _) = e.progress.snapshot();
                     s.running += 1;
                     s.speed += e.speed;
-                    s.done += done.min(total);
-                    s.total += total;
+                    // Sizes are the servers' word: the largest a header can say must not wrap around.
+                    s.done = s.done.saturating_add(done.min(total));
+                    s.total = s.total.saturating_add(total);
                 }
                 Status::Queued => s.queued += 1,
                 _ => {}

@@ -216,6 +216,21 @@ impl Entry {
         self.headers.retain(|(k, _)| !SECRET_HEADERS.contains(&k.as_str()));
     }
 
+    /// A new link for this download. What was granted to the old one does not follow it elsewhere:
+    /// its cookies stay on their site, and a certificate exemption on its host.
+    pub(super) fn moved_to(&mut self, url: Url) {
+        if !self.headers_for(&url).contains_key(engine::header::COOKIE) {
+            self.forget_secrets();
+        }
+        self.download.insecure &= self.download.url.host_str() == url.host_str();
+        self.download.url = url;
+    }
+
+    /// Its request headers, as fit for `url` (see `engine::net::headers_for`).
+    pub(super) fn headers_for(&self, url: &Url) -> HeaderMap {
+        engine::net::headers_for(&to_header_map(&self.headers), &self.download.url, url).into_owned()
+    }
+
     /// What goes to disk: never the session secrets.
     pub(super) fn stored(&self) -> Stored {
         let (downloaded, total, _) = self.progress.snapshot();
@@ -255,7 +270,10 @@ fn restore(saved: serde_json::Value) -> Option<Entry> {
     if !target.is_absolute() || target.file_name().is_none() {
         return None;
     }
-    s.sha256 = s.sha256.filter(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()));
+    let digest = |h: &str| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit());
+    s.sha256 = s.sha256.filter(|h| digest(h));
+    // A report's fingerprint makes the address of its page (see `Report::link`).
+    s.scan = s.scan.filter(|r| digest(&r.sha256));
     // Interrupted by exit (quit, shutdown, crash): downloads pick up where they were, from their
     // resume point; a recording cannot continue without its browser tab.
     if *s.download.status() == Status::Running {
@@ -327,9 +345,47 @@ mod tests {
         let sha256 = "ab".repeat(32);
 
         let kept = restore(saved(target.clone(), Some(&sha256))).unwrap();
-        let dropped = restore(saved(target, Some("../users/me?x=1"))).unwrap();
+        let dropped = restore(saved(target.clone(), Some("../users/me?x=1"))).unwrap();
 
-        assert_eq!(kept.sha256, Some(sha256));
+        assert_eq!(kept.sha256, Some(sha256.clone()));
         assert_eq!(dropped.sha256, None);
+
+        let with_report = |fingerprint: &str| {
+            let report = Report { malicious: 0, suspicious: 0, harmless: 1, undetected: 0, unavailable: 0, detections: Vec::new(), sha256: fingerprint.to_owned() };
+            let mut value = saved(target.clone(), None);
+            value["scan"] = serde_json::to_value(report).unwrap();
+            restore(value).unwrap().scan
+        };
+        assert!(matches!(with_report(&sha256), Scan::Done(_)));
+        assert!(matches!(with_report("../../evil?x="), Scan::None), "it would make the report's address");
+    }
+
+    /// Regression: "Change the link" kept the old link's cookies and certificate exemption, and sent
+    /// them to whatever site the new link was on.
+    #[test]
+    fn a_new_link_keeps_what_the_old_one_was_granted_on_its_own_site_only() {
+        let cookie = |entry: &Entry| entry.headers.iter().any(|(k, _)| k == "cookie");
+        let moved = |to: &str| {
+            let mut download = Download::new("https://www.example.com/a.zip".parse().unwrap(), std::env::temp_dir().join("a.zip"), 8);
+            download.insecure = true;
+            let headers = vec![("cookie".to_owned(), "sid=1".to_owned()), ("referer".to_owned(), "https://www.example.com/".to_owned())];
+            let mut entry = Entry::new(download, headers, 0, 0);
+            entry.moved_to(to.parse().unwrap());
+            entry
+        };
+
+        let same_host = moved("https://www.example.com/b.zip");
+        assert!(cookie(&same_host) && same_host.download.insecure);
+        assert_eq!(same_host.download.url.as_str(), "https://www.example.com/b.zip");
+
+        let sibling = moved("https://cdn.example.com/a.zip");
+        assert!(cookie(&sibling), "a sibling host shares the site's cookies");
+        assert!(!sibling.download.insecure, "an exemption is for one host");
+
+        let elsewhere = moved("https://mirror.example.net/a.zip");
+        assert!(!cookie(&elsewhere) && !elsewhere.download.insecure);
+        assert_eq!(elsewhere.headers.len(), 1, "only the secrets go");
+
+        assert!(!cookie(&moved("http://www.example.com/a.zip")), "never in clear");
     }
 }

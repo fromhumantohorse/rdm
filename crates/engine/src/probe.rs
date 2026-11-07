@@ -130,9 +130,14 @@ fn refused_identity(err: &EngineError) -> bool {
 }
 
 /// Whether the server may have refused the `Range` header rather than the file: some answer an
-/// error to any range, where they would serve the file to a plain request (on one connection then).
+/// error to any range, or a partial answer that cannot be used (no total, another start), where
+/// they would serve the file to a plain request (on one connection then).
 fn refuses_ranges(err: &EngineError) -> bool {
-    matches!(err, EngineError::Http(e) if e.status().is_some_and(|s| matches!(s.as_u16(), 400 | 403 | 405 | 406 | 416 | 501)))
+    match err {
+        EngineError::RangeIgnored => true,
+        EngineError::Http(e) => e.status().is_some_and(|s| matches!(s.as_u16(), 400 | 403 | 405 | 406 | 416 | 501)),
+        _ => false,
+    }
 }
 
 /// The request again as a common download tool ([`FALLBACK_AGENT`]); `None` if refused too.
@@ -179,10 +184,10 @@ async fn attempt_probe(client: &Client, url: &Url, headers: &HeaderMap, ask: Ask
     let announced = h.get(header::ACCEPT_RANGES).and_then(|v| v.to_str().ok()).is_some_and(|v| v.trim().eq_ignore_ascii_case("bytes"));
     let ranges = partial || (ask == Ask::Data && announced);
     let version = version_of(h);
-    let disposition = h.get(header::CONTENT_DISPOSITION).and_then(|v| v.to_str().ok());
+    let disposition = h.get(header::CONTENT_DISPOSITION).map(|v| header_text(v.as_bytes()));
     let content_type = h.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok());
     let hls = crate::hls::is_playlist(res.url(), content_type);
-    let mut file_name = suggest_file_name(res.url(), disposition);
+    let mut file_name = suggest_file_name(res.url(), disposition.as_deref());
     if hls {
         let stem = file_name.rsplit_once('.').map_or(file_name.as_str(), |(s, _)| s);
         file_name = format!("{stem}.ts");
@@ -203,6 +208,12 @@ async fn attempt_probe(client: &Client, url: &Url, headers: &HeaderMap, ask: Ask
         let _ = res.bytes().await;
     }
     Ok((probe, None))
+}
+
+/// A header's text: many servers send a file name in raw UTF-8 or Latin-1, as browsers read it. Taken
+/// for plain ASCII, the name would be lost, and the file named after its link (`download.php`).
+fn header_text(bytes: &[u8]) -> String {
+    std::str::from_utf8(bytes).map_or_else(|_| bytes.iter().map(|&b| char::from(b)).collect(), str::to_owned)
 }
 
 pub fn suggest_file_name(url: &Url, disposition: Option<&str>) -> String {
@@ -358,6 +369,15 @@ mod tests {
         assert_eq!(version_of(&headers(&[(header::DATE, now), (header::LAST_MODIFIED, now), (header::ETAG, "\"v2\"")])).as_deref(), Some("etag:\"v2\""));
         let older = format!("date:{date}");
         assert_eq!(version_of(&headers(&[(header::DATE, now), (header::LAST_MODIFIED, date)])), Some(older), "a real, older date");
+    }
+
+    /// Regression: a name in raw UTF-8 or Latin-1 was dropped, and the file named after its link.
+    #[test]
+    fn a_disposition_in_raw_utf8_or_latin1_keeps_its_name() {
+        let u: Url = "https://x.io/download.php".parse().unwrap();
+        for raw in ["attachment; filename=\"été.pdf\"".as_bytes(), b"attachment; filename=\"\xE9t\xE9.pdf\""] {
+            assert_eq!(suggest_file_name(&u, Some(&header_text(raw))), "été.pdf");
+        }
     }
 
     #[test]

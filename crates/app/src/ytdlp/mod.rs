@@ -4,9 +4,9 @@
 //!
 //! Installed on request only, in the user's own data folder (no administrator rights), from the
 //! projects' GitHub releases, and nothing runs that was not checked first:
-//! - yt-dlp, its latest release (YouTube changes often): its checksum list must carry the
-//!   signature of yt-dlp's own key (written below), and the program must match it — a GitHub
-//!   account taken over cannot slip in another program;
+//! - yt-dlp, its latest release (YouTube changes often; brought up to date when YouTube refuses
+//!   it): its checksum list must carry the signature of yt-dlp's own key (written below), and the
+//!   program must match it — a GitHub account taken over cannot slip in another program;
 //! - Deno, bgutil and the drawing library bgutil needs (`canvas`, a native library): exact
 //!   versions, each archive checked against the SHA-256 written in `setup`. No package's own
 //!   install script runs (`canvas`'s used to download its library unchecked).
@@ -20,7 +20,10 @@ mod setup;
 
 use std::{
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -45,6 +48,7 @@ const YTDLP_MODULUS: [u8; 512] = crate::hex::decode(concat!(
 
 const EXE: &str = std::env::consts::EXE_SUFFIX;
 const SETUP_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const REFRESH_EVERY: Duration = Duration::from_secs(24 * 3600);
 /// Written last: the module is complete.
 const READY: &str = "ready";
 
@@ -114,6 +118,47 @@ pub fn install(rt: &tokio::runtime::Handle, route: engine::Route) {
             Err(e) => Some(State::Failed(e.to_string())),
         };
     });
+}
+
+/// YouTube refused the module's yt-dlp, which may be too old by now (YouTube changes often, and the
+/// module is installed once): its latest program, checked like at installation, for the next try.
+pub fn refresh(rt: &tokio::runtime::Handle, route: engine::Route) {
+    static RUNNING: AtomicBool = AtomicBool::new(false);
+    let Some(path) = tools_dir().map(|dir| paths(&dir).ytdlp) else { return };
+    if !refresh_due(&path) || RUNNING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    rt.spawn(async move {
+        // A failure (no network, the program in use) is tried again at the next refusal.
+        let _ = tokio::time::timeout(SETUP_TIMEOUT, setup::refresh(&path, &route)).await;
+        RUNNING.store(false, Ordering::Release);
+    });
+}
+
+/// Not more than once a day: YouTube refuses for other reasons too.
+fn refresh_due(program: &Path) -> bool {
+    !std::fs::metadata(program).and_then(|m| m.modified()).is_ok_and(|at| at.elapsed().is_ok_and(|age| age < REFRESH_EVERY))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn yt_dlp_is_refreshed_once_a_day_at_most() {
+        let dir = std::env::temp_dir().join(format!("rdm-refresh-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let program = dir.join("yt-dlp");
+        assert!(refresh_due(&program), "missing");
+
+        let file = std::fs::File::create(&program).unwrap();
+        assert!(!refresh_due(&program), "just written");
+
+        file.set_modified(std::time::SystemTime::now() - REFRESH_EVERY - Duration::from_secs(60)).unwrap();
+        drop(file);
+        assert!(refresh_due(&program), "a day old");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 /// The real thing: installs the module (every check included) in a scratch folder and reads a

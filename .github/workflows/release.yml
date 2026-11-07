@@ -67,12 +67,12 @@ jobs:
       - name: Extension builds (Firefox + Chromium) + lint
         if: matrix.artifact == 'rdm-linux'
         env:
-          NODE_OPTIONS: --disable-proto=throw
+          NODE_OPTIONS: --disable-proto=delete
         run: |
           sh packaging/firefox/build.sh
           sh packaging/chromium/build.sh
           npm ci --ignore-scripts --no-audit --no-fund --prefix packaging/web-ext
-          node --disable-proto=throw --test packaging/web-ext/security.test.cjs
+          node --disable-proto=delete --test packaging/web-ext/security.test.cjs
           npm audit --audit-level=moderate --ignore-scripts --prefix packaging/web-ext
           packaging/web-ext/node_modules/.bin/web-ext lint --self-hosted --source-dir target/firefox
 
@@ -159,7 +159,7 @@ jobs:
           path: unsigned
       - name: Sign the Firefox package
         env:
-          NODE_OPTIONS: --disable-proto=throw
+          NODE_OPTIONS: --disable-proto=delete
           AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
           AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
         run: |

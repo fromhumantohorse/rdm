@@ -79,9 +79,7 @@ pub(super) async fn setup(dir: &Path, route: &engine::Route) -> Result<(), Modul
     tokio::fs::create_dir_all(&p.plugins).await.map_err(ModuleError::CreateFolder)?;
     let client = engine::client_with(&engine::ClientOptions { route: route.clone(), ..engine::ClientOptions::default() }).map_err(ModuleError::Client)?;
 
-    let ytdlp = signed_ytdlp(&client).await?;
-    let path = p.ytdlp.clone();
-    tokio::task::spawn_blocking(move || write_exe(&path, |out| std::io::Write::write_all(out, &ytdlp))).await??;
+    install_ytdlp(&client, &p.ytdlp).await?;
 
     let (name, sha256) = DENO_ASSET;
     let deno = download(&client, &format!("https://github.com/denoland/deno/releases/download/v{DENO_VERSION}/{name}"), Some(sha256)).await?;
@@ -114,6 +112,18 @@ pub(super) async fn setup(dir: &Path, route: &engine::Route) -> Result<(), Modul
     unpack_tar_gz(dir, &library, &p.server.join("node_modules").join("canvas")).await?;
     let ready = format!("bgutil {BGUTIL_TAG}\ndeno {DENO_VERSION}\ncanvas {CANVAS_VERSION}\n");
     Ok(tokio::fs::write(dir.join(READY), ready).await?)
+}
+
+/// Only yt-dlp's program brought up to date (see `ytdlp::refresh`).
+pub(super) async fn refresh(path: &Path, route: &engine::Route) -> Result<(), ModuleError> {
+    let client = engine::client_with(&engine::ClientOptions { route: route.clone(), ..engine::ClientOptions::default() }).map_err(ModuleError::Client)?;
+    install_ytdlp(&client, path).await
+}
+
+async fn install_ytdlp(client: &reqwest::Client, path: &Path) -> Result<(), ModuleError> {
+    let ytdlp = signed_ytdlp(client).await?;
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || write_exe(&path, |out| std::io::Write::write_all(out, &ytdlp))).await?
 }
 
 /// yt-dlp's latest program, once its release's checksum list carries yt-dlp's signature

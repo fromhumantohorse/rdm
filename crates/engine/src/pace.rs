@@ -1,5 +1,5 @@
 //! Adaptive connection count, the way TCP adapts its window (AIMD): a download starts with a few
-//! connections, doubles them every second while all of them stay healthy, then adds one at a time
+//! connections, doubles them every half second while all of them stay healthy, then adds one at a time
 //! once trouble has been seen; when connections fail (timeouts, resets, a server refusing more
 //! with 429/503) it drops a quarter of them — half for an explicit refusal. A weak Wi-Fi, a
 //! saturated router or a picky server thus settle on what they can take, instead of every
@@ -265,7 +265,7 @@ const REPROBE_TICKS: u16 = 30;
 impl Growth {
     /// Called once per tick with the bytes received during it; `true` when more connections may help.
     /// `quick` (slow start, nothing went wrong yet): each tick is judged on its own, right after
-    /// the last increase — connections double every second while they pay off.
+    /// the last increase — connections double every half second while they pay off.
     pub fn more(&mut self, bytes: u64, quick: bool) -> bool {
         // The very first tick has no predecessor: not averaged with a zero.
         self.recent = if self.baseline.is_none() && self.settle == 0 { [bytes, bytes] } else { [self.recent[1], bytes] };

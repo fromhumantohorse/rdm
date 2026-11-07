@@ -85,6 +85,7 @@ pub struct Settings {
     /// Default sub-folder per category (`Downloads/Videos`…), like IDM.
     pub categorize: bool,
     /// User-chosen folder per category; wins over the default above.
+    #[serde(deserialize_with = "lenient")]
     pub category_dirs: BTreeMap<Category, PathBuf>,
     /// Extensions the browser extension hands over to RDM (space-separated).
     pub captured: String,
@@ -294,8 +295,13 @@ mod tests {
     #[test]
     fn unknown_values_fall_back_instead_of_resetting_everything() {
         let newer = r#"{"download_dir":"x","connections":7,"theme":"Neon","language":"Klingon",
-            "proxy":{"mode":"Pac","url":"http://p:1"},"queues":[{"id":3}],"existing":42}"#;
+            "proxy":{"mode":"Pac","url":"http://p:1"},"queues":[{"id":3}],"existing":42,
+            "category_dirs":{"Hologram":"x"}}"#;
         let s: Settings = serde_json::from_str(newer).unwrap();
+        assert!(s.category_dirs.is_empty());
+        let chosen: Settings = serde_json::from_str(r#"{"category_dirs":{"Video":"/films","Model":"/models"}}"#).unwrap();
+        assert_eq!(chosen.category_dirs.get(&Category::Video), Some(&PathBuf::from("/films")), "the folders it knows are kept");
+        assert_eq!(chosen.category_dirs.len(), 2);
         assert_eq!((s.connections, s.theme, s.language), (7, Theme::System, Language::Auto));
         assert_eq!((s.proxy.mode, s.proxy.url.as_str()), (ProxyMode::System, "http://p:1"), "only the unknown mode falls back");
         assert!(s.queues.is_empty() && s.existing == ExistingFile::Ask);

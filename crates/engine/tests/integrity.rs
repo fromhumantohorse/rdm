@@ -67,6 +67,37 @@ async fn another_version_of_the_same_size_cannot_continue_a_download() {
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
 
+/// Regression: every attempt asked for a range again, and the download ended in failure, where a
+/// plain request gives the file.
+#[tokio::test]
+async fn a_partial_answer_of_unknown_total_falls_back_to_a_plain_request() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/file.bin", listener.local_addr().unwrap()).parse().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0; 1];
+            while !request.ends_with(b"\r\n\r\n") && socket.read(&mut byte).await.unwrap_or(0) == 1 {
+                request.push(byte[0]);
+            }
+            let ranged = String::from_utf8_lossy(&request).to_ascii_lowercase().contains("range:");
+            let answer: &[u8] = if ranged {
+                b"HTTP/1.1 206 Partial Content\r\ncontent-range: bytes 0-4/*\r\ncontent-length: 5\r\nconnection: close\r\n\r\nhello"
+            } else {
+                b"HTTP/1.1 200 OK\r\ncontent-length: 5\r\nconnection: close\r\n\r\nhello"
+            };
+            let _ = socket.write_all(answer).await;
+        }
+    });
+    let path = target("unknown-total");
+    let job = Job::new(url, path.clone());
+    let result = tokio::time::timeout(Duration::from_secs(10), engine::run(&client(), &job, Arc::default(), CancellationToken::new())).await.unwrap();
+    assert_eq!(result.unwrap(), Outcome::Completed);
+    assert_eq!(std::fs::read(&path).unwrap(), b"hello");
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
 #[tokio::test]
 async fn a_probe_rejects_a_partial_answer_that_starts_at_the_wrong_byte() {
     let url = serve(vec![b"HTTP/1.1 206 Partial Content\r\ncontent-range: bytes 1-1/10\r\ncontent-length: 1\r\nconnection: close\r\n\r\nx".to_vec()]).await;

@@ -21,6 +21,8 @@ use crate::{EngineError, RateLimit, net};
 const RETRIES: u32 = 8;
 /// Memory set aside for a segment before it arrives, at most (see `get_once`).
 const RESERVE_MAX: u64 = 16 << 20;
+/// All a key may hold: a stream may name a new key per segment, and each stays in memory.
+const AES_128_KEY: u64 = 16;
 
 pub(super) struct Http<'a> {
     pub(super) client: &'a Client,
@@ -108,7 +110,7 @@ pub(super) async fn fetch_part<'b>(http: &Http<'_>, part: Part, budget: (&'b Bud
     let secret = match cached {
         Some(k) => k,
         None => {
-            let k: Arc<[u8]> = get(http, &key.url, None, 1024, None).await?.0.into();
+            let k: Arc<[u8]> = get(http, &key.url, None, AES_128_KEY, None).await?.0.into();
             http.keys.lock().unwrap_or_else(PoisonError::into_inner).insert(key.url.clone(), k.clone());
             k
         }

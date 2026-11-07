@@ -5,12 +5,12 @@ As of 2026-11-07, `web-ext` 10.8.0 depends on `deepmerge` 4.3.1 through
 reports prototype poisoning and lists no patched version. This is build and
 signing tooling; it is not bundled in the RDM executable or browser extension.
 
-The CI runs the linter and signing tool with `NODE_OPTIONS=--disable-proto=throw`,
+The CI runs the linter and signing tool with `NODE_OPTIONS=--disable-proto=delete`,
 the runtime workaround described in the [upstream report](https://github.com/TehShrike/deepmerge/issues/273).
 Keep this flag when running web-ext locally. The regression check is:
 
 ```sh
-node --disable-proto=throw --test packaging/web-ext/security.test.cjs
+node --disable-proto=delete --test packaging/web-ext/security.test.cjs
 ```
 
 The flag mitigates the demonstrated prototype-access vector; it does not remove
