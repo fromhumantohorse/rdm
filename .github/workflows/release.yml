@@ -200,7 +200,11 @@ jobs:
       - name: Collect the packages (the signed Firefox package replaces the unsigned one)
         run: |
           mkdir dist
-          cp artifacts/rdm-windows/* artifacts/rdm-windows-arm64/* artifacts/rdm-linux/* artifacts/rdm-linux-arm64/* artifacts/rdm-macos/* dist/
+          # One `cp` per build: both Windows builds also hold an rdm.exe and an install.ps1 (not
+          # released), and a single `cp` refuses two files of one name.
+          for build in rdm-windows rdm-windows-arm64 rdm-linux rdm-linux-arm64 rdm-macos; do
+            cp artifacts/$build/* dist/
+          done
           if [ -f artifacts/rdm-firefox-signed/rdm-firefox.xpi ]; then
             cp artifacts/rdm-firefox-signed/rdm-firefox.xpi dist/rdm-firefox.xpi
           fi
