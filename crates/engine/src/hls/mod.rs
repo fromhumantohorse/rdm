@@ -309,8 +309,8 @@ fn fingerprint(parts: &[Part]) -> [u8; 32] {
 }
 
 async fn load(http: &Http<'_>, url: &Url) -> Result<Playlist, EngineError> {
-    let (body, _) = get(http, url, None, MAX_PLAYLIST_BYTES, None).await?;
-    parse(url, &String::from_utf8_lossy(&body))
+    let (body, _, final_url) = get(http, url, None, MAX_PLAYLIST_BYTES, None).await?;
+    parse(&final_url, &String::from_utf8_lossy(&body))
 }
 
 async fn load_state(path: &Path) -> Option<Resume> {

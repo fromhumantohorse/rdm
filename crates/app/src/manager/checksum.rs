@@ -7,7 +7,7 @@ use md5::Md5;
 use sha1::Sha1;
 use sha2::{Digest, Sha256, Sha512};
 
-use super::{Manager, Verify};
+use super::{Entry, Manager, Verify};
 
 /// Hex digest of the file at `path` (read in 1 MiB blocks: any size, little memory).
 pub fn digest(path: &Path, algo: HashAlgo) -> std::io::Result<String> {
@@ -65,29 +65,56 @@ impl Manager {
         let this = self.clone();
         self.rt.spawn_blocking(move || {
             let digest = digest(&path, expected.algo());
-            // Worth keeping: VirusTotal looks files up by SHA-256.
-            if expected.algo() == HashAlgo::Sha256
-                && let Ok(hash) = &digest
-            {
-                let hash = hash.clone();
-                this.update_quiet(id, |e| e.sha256 = Some(hash));
+            let mismatch = this.update(id, |e| finish_verification(e, &path, &expected, digest));
+            if mismatch == Some(true) {
+                crate::notify::checksum_mismatch(&name);
             }
-            let state = match digest {
-                Ok(actual) if expected.matches(&actual) => Verify::Ok,
-                Ok(actual) => {
-                    crate::notify::checksum_mismatch(&name);
-                    Verify::Mismatch(actual)
-                }
-                Err(e) => Verify::Failed(e.to_string()),
-            };
-            this.update(id, |e| e.verify = state);
         });
     }
+}
+
+/// A hash can take minutes. A cleared or replaced expectation must not be overwritten by the
+/// previous check's result (nor generate a notification about an expectation no longer in use).
+fn finish_verification(entry: &mut Entry, path: &Path, expected: &Checksum, digest: std::io::Result<String>) -> bool {
+    if entry.download.target != path || entry.download.checksum.as_ref() != Some(expected) || *entry.download.status() != Status::Completed {
+        return false;
+    }
+    if expected.algo() == HashAlgo::Sha256 && let Ok(hash) = &digest {
+        entry.sha256 = Some(hash.clone());
+    }
+    entry.verify = match digest {
+        Ok(actual) if expected.matches(&actual) => Verify::Ok,
+        Ok(actual) => Verify::Mismatch(actual),
+        Err(e) => Verify::Failed(e.to_string()),
+    };
+    matches!(entry.verify, Verify::Mismatch(_))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_late_checksum_result_cannot_replace_the_current_verdict() {
+        let mut download = domain::Download::new("https://example.com/a.zip".parse().unwrap(), std::env::temp_dir().join("a.zip"), 1);
+        download.start().unwrap();
+        download.complete().unwrap();
+        let mut entry = Entry::new(download, Vec::new(), 0, 0);
+        let path = entry.download.target.clone();
+        let old = Checksum::parse(&"11".repeat(32)).unwrap();
+        let current = Checksum::parse(&"22".repeat(32)).unwrap();
+        entry.download.checksum = Some(current.clone());
+        entry.verify = Verify::Running;
+        assert!(!finish_verification(&mut entry, &path, &old, Ok("11".repeat(32))));
+        assert_eq!(entry.verify, Verify::Running, "an old success must not mark the new checksum valid");
+        assert!(entry.sha256.is_none());
+        assert!(!finish_verification(&mut entry, &path, &current, Ok("22".repeat(32))));
+        assert_eq!(entry.verify, Verify::Ok);
+        entry.download.checksum = None;
+        entry.verify = Verify::None;
+        assert!(!finish_verification(&mut entry, &path, &current, Ok("33".repeat(32))));
+        assert_eq!(entry.verify, Verify::None, "a cleared checksum stays cleared, without a mismatch notification");
+    }
 
     #[test]
     fn digests_of_known_content() {

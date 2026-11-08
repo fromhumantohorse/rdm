@@ -3,7 +3,7 @@
 use super::*;
 
 /// Never written to disk: session cookies stay in memory only.
-const SECRET_HEADERS: [&str; 2] = ["cookie", "authorization"];
+const SECRET_HEADERS: [&str; 3] = ["cookie", "authorization", "proxy-authorization"];
 
 pub struct Entry {
     pub download: Download,
@@ -213,15 +213,15 @@ impl Entry {
 
     /// Finished: the session's secrets have no use left (a long history would keep them all).
     pub(super) fn forget_secrets(&mut self) {
-        self.headers.retain(|(k, _)| !SECRET_HEADERS.contains(&k.as_str()));
+        self.headers.retain(|(k, _)| !secret_header(k));
     }
 
     /// A new link for this download. What was granted to the old one does not follow it elsewhere:
-    /// its cookies stay on their site, and a certificate exemption on its host.
+    /// its raw cookies stay on their host, its authentication on its origin, and a certificate
+    /// exemption on its host.
     pub(super) fn moved_to(&mut self, url: Url) {
-        if !self.headers_for(&url).contains_key(engine::header::COOKIE) {
-            self.forget_secrets();
-        }
+        let allowed = self.headers_for(&url);
+        self.headers.retain(|(k, _)| !secret_header(k) || allowed.contains_key(k.as_str()));
         self.download.insecure &= self.download.url.host_str() == url.host_str();
         self.download.url = url;
     }
@@ -234,10 +234,14 @@ impl Entry {
     /// What goes to disk: never the session secrets.
     pub(super) fn stored(&self) -> Stored {
         let (downloaded, total, _) = self.progress.snapshot();
-        let headers = self.headers.iter().filter(|(k, _)| !SECRET_HEADERS.contains(&k.as_str())).cloned().collect();
+        let headers = self.headers.iter().filter(|(k, _)| !secret_header(k)).cloned().collect();
         let scan = if let Scan::Done(report) = &self.scan { Some(report.clone()) } else { None };
         Stored { download: self.download.clone(), headers, downloaded, total, sha256: self.sha256.clone(), scan, replaces: self.replaces }
     }
+}
+
+fn secret_header(name: &str) -> bool {
+    SECRET_HEADERS.iter().any(|secret| name.eq_ignore_ascii_case(secret))
 }
 
 #[derive(Serialize, Deserialize)]
@@ -340,6 +344,34 @@ mod tests {
     }
 
     #[test]
+    fn changing_origin_filters_each_credential_independently() {
+        let moved = |to: &str, cookie: bool| {
+            let download = Download::new("https://www.example.com/a.zip".parse().unwrap(), std::env::temp_dir().join("a.zip"), 8);
+            let mut headers = vec![("authorization".to_owned(), "Bearer secret".to_owned()), ("referer".to_owned(), "https://www.example.com/".to_owned())];
+            if cookie {
+                headers.push(("cookie".to_owned(), "sid=1".to_owned()));
+            }
+            let mut entry = Entry::new(download, headers, 0, 0);
+            entry.moved_to(to.parse().unwrap());
+            to_header_map(&entry.headers)
+        };
+        assert!(moved("https://www.example.com/b.zip", false).contains_key("authorization"), "a same-origin login survives without a cookie");
+        for to in ["https://cdn.example.com/a.zip", "https://www.example.com:8443/a.zip", "http://www.example.com/a.zip"] {
+            assert!(!moved(to, true).contains_key("authorization"), "a login must not follow to {to}");
+        }
+    }
+
+    #[test]
+    fn secrets_are_neither_stored_nor_retained_regardless_of_header_case() {
+        let download = Download::new("https://example.com/a.zip".parse().unwrap(), std::env::temp_dir().join("a.zip"), 8);
+        let headers = ["Cookie", "Authorization", "Proxy-Authorization", "referer"].map(|k| (k.to_owned(), "secret".to_owned())).to_vec();
+        let mut entry = Entry::new(download, headers, 0, 0);
+        assert_eq!(entry.stored().headers, [("referer".to_owned(), "secret".to_owned())]);
+        entry.forget_secrets();
+        assert_eq!(entry.headers, [("referer".to_owned(), "secret".to_owned())]);
+    }
+
+    #[test]
     fn a_malformed_fingerprint_is_dropped_before_it_reaches_a_url() {
         let target = std::env::temp_dir().join("a.zip");
         let sha256 = "ab".repeat(32);
@@ -379,7 +411,7 @@ mod tests {
         assert_eq!(same_host.download.url.as_str(), "https://www.example.com/b.zip");
 
         let sibling = moved("https://cdn.example.com/a.zip");
-        assert!(cookie(&sibling), "a sibling host shares the site's cookies");
+        assert!(!cookie(&sibling), "raw cookies have no domain scope proving they can be shared");
         assert!(!sibling.download.insecure, "an exemption is for one host");
 
         let elsewhere = moved("https://mirror.example.net/a.zip");

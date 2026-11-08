@@ -219,74 +219,15 @@ pub(crate) fn allowed_hop(from: &Url, to: &Url) -> bool {
     is_local(from) || !is_local(to)
 }
 
-/// Whether two URLs belong to the same site, as browsers scope cookies: the same host, or two
-/// hosts under the same registrable domain — approximated by its last two labels, one more under
-/// a country's registry (`co.uk`) or a hosting platform shared by strangers (`github.io`). An IP
-/// address: that address only.
-pub(crate) fn same_site(a: &Url, b: &Url) -> bool {
-    match (a.host(), b.host()) {
-        (Some(Host::Domain(x)), Some(Host::Domain(y))) => site(x) == site(y),
-        (Some(Host::Ipv4(x)), Some(Host::Ipv4(y))) => x == y,
-        (Some(Host::Ipv6(x)), Some(Host::Ipv6(y))) => x == y,
-        _ => false,
-    }
-}
-
-/// Second levels a country's registry hands out (`co.uk`, `com.au`, `ne.jp`, `gob.mx`): a site is
-/// one label further. Any other (`zdf.de`, `tf1.fr`) is a site of its own. Same list as
-/// `extension/shared.js`.
-const REGISTRY_SECOND_LEVELS: [&str; 18] =
-    ["ac", "co", "com", "edu", "go", "gob", "gov", "gv", "ltd", "mil", "ne", "net", "nic", "nom", "or", "org", "plc", "sch"];
-
-/// Hosting platforms whose subdomains belong to different people (the Public Suffix List's private
-/// section, most visited part): `alice.github.io` and `bob.github.io` are two sites. Same list as
-/// `extension/shared.js`.
-const SHARED_HOSTS: [&str; 20] = [
-    "appspot.com",
-    "azurewebsites.net",
-    "blogspot.com",
-    "cloudfront.net",
-    "firebaseapp.com",
-    "fly.dev",
-    "github.io",
-    "gitlab.io",
-    "glitch.me",
-    "herokuapp.com",
-    "netlify.app",
-    "neocities.org",
-    "onrender.com",
-    "pages.dev",
-    "s3.amazonaws.com",
-    "tumblr.com",
-    "vercel.app",
-    "web.app",
-    "wordpress.com",
-    "workers.dev",
-];
-
-fn site(host: &str) -> String {
-    let host = host.trim_end_matches('.').to_ascii_lowercase();
-    let labels: Vec<&str> = host.split('.').collect();
-    // Labels of the suffix under which sites are registered.
-    let suffix = SHARED_HOSTS.iter().find(|shared| host.strip_suffix(**shared).is_some_and(|rest| rest.ends_with('.'))).map_or_else(
-        || match labels.as_slice() {
-            [.., second, tld] if tld.len() == 2 && REGISTRY_SECOND_LEVELS.contains(second) => 2,
-            _ => 1,
-        },
-        |shared| shared.split('.').count(),
-    );
-    labels[labels.len().saturating_sub(suffix + 1)..].join(".")
-}
-
 /// The request headers fit for `to` when they were given for `from`: the credentials (cookies, a
-/// login) stay within `from`'s site. A playlist may point anywhere: its segments on another site
-/// must not receive them — what browsers do, and what the HTTP client does on redirects. Given
+/// login) stay within the host or origin they were given for. A raw Cookie header has lost its
+/// Domain/hostOnly metadata: sharing it with a sibling host could leak host-only cookies, even
+/// under the same registrable domain. A playlist's segments on another host get none. Given
 /// over HTTPS, they never travel in clear either: an `http://` segment of the same site gets none.
 pub fn headers_for<'h>(headers: &'h HeaderMap, from: &Url, to: &Url) -> Cow<'h, HeaderMap> {
     let downgrade = from.scheme() == "https" && to.scheme() != "https";
-    let strip_cookie = (!same_site(from, to) || downgrade) && headers.contains_key(header::COOKIE);
-    // HTTP authentication is scoped to an origin, not a registrable domain: a sibling host or
-    // another port must not receive a saved login just because cookies may be shared with it.
+    let strip_cookie = (from.host() != to.host() || downgrade) && headers.contains_key(header::COOKIE);
+    // HTTP authentication is scoped to an origin: another port must not receive a saved login.
     let strip_auth = from.origin() != to.origin() && [header::AUTHORIZATION, header::PROXY_AUTHORIZATION].iter().any(|h| headers.contains_key(h));
     if !strip_cookie && !strip_auth {
         return Cow::Borrowed(headers);
@@ -424,67 +365,19 @@ mod tests {
     }
 
     #[test]
-    fn sites_as_cookies_see_them() {
-        let same = |a: &str, b: &str| same_site(&u(a), &u(b));
-        assert!(same("https://www.example.com/a.m3u8", "https://cdn.example.com/s.ts"));
-        assert!(same("https://example.com/", "https://EXAMPLE.com.:8443/x"));
-        assert!(same("https://www.bbc.co.uk/", "https://media.bbc.co.uk/"));
-        assert!(!same("https://www.bbc.co.uk/", "https://evil.co.uk/"), "a country's second level is not a site");
-        assert!(!same("https://example.com/", "https://example.com.evil.io/"));
-        assert!(!same("https://example.com/", "https://evil-example.com/"));
-        assert!(same("http://10.0.0.2/a", "http://10.0.0.2:8080/b"));
-        assert!(!same("http://10.0.0.2/", "http://10.0.0.3/"));
-        assert!(!same("http://127.0.0.1/", "http://localhost/"));
-        assert!(same("http://[2001:db8::1]/a", "http://[2001:db8::1]:8080/b"));
-        assert!(!same("http://[2001:db8::1]/", "http://[2001:db8::2]/"));
-        // A short name under a country code is a site, not a registry: its CDN is the same site.
-        assert!(same("https://www.zdf.de/", "https://cdn.zdf.de/seg.ts"));
-        assert!(same("https://www.tf1.fr/", "https://videos.tf1.fr/"));
-        assert!(same("https://www.amazon.co.jp/", "https://images.amazon.co.jp/"));
-        assert!(!same("https://shop.com.au/", "https://other.com.au/"));
-        // Strangers on one hosting platform are not one site.
-        assert!(!same("https://alice.github.io/", "https://bob.github.io/"));
-        assert!(same("https://alice.github.io/a", "https://alice.github.io/b"));
-        assert!(!same("https://a.s3.amazonaws.com/", "https://b.s3.amazonaws.com/"));
-        assert!(!same("https://github.io/", "https://bob.github.io/"));
-        assert!(same("https://github.com/", "https://api.github.com/"), "only the platform's own suffix");
-    }
-
-    /// The extension judges sites the same way (`siteOf` in `extension/shared.js`): same lists.
-    #[test]
-    fn the_extension_knows_the_same_registries_and_shared_hosts() {
-        let shared_js = include_str!("../../../extension/shared.js");
-        let words_of = |declaration: &str, end: &str| -> Vec<String> {
-            let start = shared_js.find(declaration).unwrap_or_else(|| panic!("{declaration} not in shared.js"));
-            let body = &shared_js[start..];
-            let body = &body[..body.find(end).unwrap()];
-            let mut words: Vec<String> = body.split('"').skip(1).step_by(2).flat_map(str::split_whitespace).map(str::to_owned).collect();
-            words.sort();
-            words
-        };
-
-        let sorted = |list: &[&str]| {
-            let mut words: Vec<String> = list.iter().map(|w| (*w).to_owned()).collect();
-            words.sort();
-            words
-        };
-
-        let registries = words_of("const REGISTRY_SECOND_LEVELS", ".split(");
-        let shared = words_of("const SHARED_HOSTS", ").split(");
-
-        assert_eq!(registries, sorted(&REGISTRY_SECOND_LEVELS));
-        assert_eq!(shared, sorted(&SHARED_HOSTS));
-    }
-
-    #[test]
     fn credentials_stay_on_their_site() {
         let mut h = HeaderMap::new();
         h.insert(header::COOKIE, "sid=1".parse().unwrap());
         h.insert(header::AUTHORIZATION, "Basic dTpw".parse().unwrap());
         h.insert(header::REFERER, "https://www.example.com/".parse().unwrap());
         let from = u("https://www.example.com/master.m3u8");
+        assert!(headers_for(&h, &from, &u("https://www.example.com/seg.ts")).contains_key(header::COOKIE));
+        // Not all shared hosting suffixes can be anticipated, and even ordinary sibling hosts
+        // need not be entitled to the original host's cookies.
+        let hosted = headers_for(&h, &u("https://alice.eu.org/master.m3u8"), &u("https://bob.eu.org/seg.ts"));
+        assert!(!hosted.contains_key(header::COOKIE));
         let sibling = headers_for(&h, &from, &u("https://cdn.example.com/seg.ts"));
-        assert!(sibling.contains_key(header::COOKIE));
+        assert!(!sibling.contains_key(header::COOKIE), "raw cookies may be host-only");
         assert!(!sibling.contains_key(header::AUTHORIZATION), "a sibling CDN cannot receive the site's login");
         let another_port = headers_for(&h, &from, &u("https://www.example.com:8443/seg.ts"));
         assert!(!another_port.contains_key(header::AUTHORIZATION), "another port is another authentication origin");

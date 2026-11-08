@@ -10,6 +10,20 @@ use tokio::{
 };
 
 #[tokio::test]
+async fn an_internet_video_cannot_fetch_an_audio_track_from_a_literal_lan_address() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let audio = format!("http://{}/audio.mp4", listener.local_addr().unwrap()).parse().unwrap();
+    let dir = std::env::temp_dir().join(format!("rdm-audio-lan-{}", std::process::id()));
+    let mut job = Job::new("https://video.example.invalid/video.mp4".parse().unwrap(), dir.join("video.mp4"));
+    job.audio = Some(audio);
+    let client = engine::client_with(&ClientOptions { route: engine::Route::Direct, public_only: true, ..ClientOptions::default() }).unwrap();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(2), engine::run(&client, &job, Arc::default(), CancellationToken::new())).await;
+    assert!(matches!(result, Ok(Err(EngineError::LocalNetwork))), "{result:?}");
+    assert!(tokio::time::timeout(std::time::Duration::from_millis(50), listener.accept()).await.is_err(), "no connection may reach the LAN");
+    assert!(!dir.exists(), "refused before creating any files");
+}
+
+#[tokio::test]
 async fn names_resolving_into_the_local_network_are_refused() {
     // A server on this computer: reachable as `localhost`, a name.
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

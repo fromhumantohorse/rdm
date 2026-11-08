@@ -32,6 +32,9 @@ pub(crate) async fn run(
     progress: Arc<Progress>,
     cancel: CancellationToken,
 ) -> Result<Outcome, EngineError> {
+    if !net::allowed_hop(&job.url, audio) {
+        return Err(EngineError::LocalNetwork);
+    }
     let split = Split::new(&job.target, &cancel);
     let video_job = Job { target: split.video.clone(), audio: None, ..job.clone() };
     let audio_job = Job {
@@ -39,7 +42,7 @@ pub(crate) async fn run(
         target: split.audio.clone(),
         audio: None,
         connections: (job.connections / 4).max(1),
-        // The credentials given for the video stay on its site.
+        // The credentials given for the video stay on their host/origin.
         headers: net::headers_for(&job.headers, &job.url, audio).into_owned(),
         ..job.clone()
     };
@@ -114,11 +117,12 @@ impl Split {
             progress.total.store(meta.len(), Relaxed);
             return Ok(Outcome::Completed);
         }
-        let result = fetch.await;
-        match &result {
-            Ok(Outcome::Completed) => fs::write(&marker, b"").await?,
-            Ok(Outcome::Paused) => {}
-            Err(_) => self.stop.cancel(),
+        let result = match fetch.await {
+            Ok(Outcome::Completed) => fs::write(&marker, b"").await.map(|()| Outcome::Completed).map_err(EngineError::from),
+            other => other,
+        };
+        if result.is_err() {
+            self.stop.cancel();
         }
         result
     }
@@ -128,5 +132,23 @@ impl Split {
         progress.downloaded.store(sum(|p| p.downloaded.load(Relaxed)), Relaxed);
         progress.total.store(sum(|p| p.total.load(Relaxed)), Relaxed);
         progress.active.store(self.progress.iter().map(|p| p.active.load(Relaxed)).sum(), Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_marker_write_failure_cancels_the_sibling_download() {
+        let dir = std::env::temp_dir().join(format!("rdm-marker-{}", std::process::id()));
+        fs::create_dir_all(&dir).await.unwrap();
+        let split = Split::new(&dir.join("movie.mp4"), &CancellationToken::new());
+        let marker = with_suffix(&split.video, ".ok");
+        fs::create_dir(&marker).await.unwrap(); // writing the completion marker must fail
+        let result = split.guard(&split.video, &split.progress[0], async { Ok(Outcome::Completed) }).await;
+        assert!(matches!(result, Err(EngineError::Io(_))));
+        assert!(split.stop.is_cancelled(), "a failed completion must stop the other track too");
+        let _ = fs::remove_dir_all(&dir).await;
     }
 }

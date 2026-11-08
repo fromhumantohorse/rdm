@@ -28,7 +28,7 @@ pub(super) struct Http<'a> {
     pub(super) client: &'a Client,
     pub(super) headers: &'a HeaderMap,
     /// Where the playlist came from: every other URL must not escape it into the LAN, and gets
-    /// its credentials only on the same site.
+    /// its credentials only on the same host/origin.
     pub(super) origin: &'a Url,
     pub(super) keys: Mutex<HashMap<Url, Arc<[u8]>>>,
     pub(super) limit: &'a RateLimit,
@@ -101,7 +101,7 @@ impl Drop for Held<'_> {
 /// One segment, decrypted, with the memory it holds in its track's budget (`index`: its position
 /// among the segments fetched).
 pub(super) async fn fetch_part<'b>(http: &Http<'_>, part: Part, budget: (&'b Budget, usize)) -> Result<(Vec<u8>, Option<Held<'b>>), EngineError> {
-    let (data, held) = get(http, &part.url, part.range, MAX_PART_BYTES, Some(budget)).await?;
+    let (data, held, _) = get(http, &part.url, part.range, MAX_PART_BYTES, Some(budget)).await?;
     // Dropped with the stream on cancel.
     http.limit.take(data.len()).await;
     http.own_limit.take(data.len()).await;
@@ -135,7 +135,7 @@ pub(super) async fn get<'b>(
     range: Option<(u64, u64)>,
     max: u64,
     budget: Option<(&'b Budget, usize)>,
-) -> Result<(Vec<u8>, Option<Held<'b>>), EngineError> {
+) -> Result<(Vec<u8>, Option<Held<'b>>, Url), EngineError> {
     if !net::allowed_hop(http.origin, url) {
         return Err(EngineError::LocalNetwork);
     }
@@ -159,8 +159,8 @@ async fn get_once<'b>(
     range: Option<(u64, u64)>,
     max: u64,
     budget: Option<(&'b Budget, usize)>,
-) -> Result<(Vec<u8>, Option<Held<'b>>), EngineError> {
-    // The page's cookies and the site's login stay on the playlist's site.
+) -> Result<(Vec<u8>, Option<Held<'b>>, Url), EngineError> {
+    // The page's cookies and the site's login stay on their host/origin.
     let headers = net::headers_for(http.headers, http.origin, url).into_owned();
     let mut req = http.client.get(url.clone()).headers(headers);
     if let Some((offset, len)) = range {
@@ -168,6 +168,7 @@ async fn get_once<'b>(
         req = req.header(reqwest::header::RANGE, format!("bytes={offset}-{last}"));
     }
     let res = req.send().await?.error_for_status()?;
+    let final_url = res.url().clone();
     // A 206 for another slice (a broken proxy or CDN) would put the wrong bytes in the video.
     if let Some((offset, len)) = range
         && res.status() == reqwest::StatusCode::PARTIAL_CONTENT
@@ -213,10 +214,10 @@ async fn get_once<'b>(
             return Err(PlaylistError::TooLarge.into());
         }
     }
-    let Some((_, len)) = range else { return Ok((body, held)) };
+    let Some((_, len)) = range else { return Ok((body, held, final_url)) };
     let (start, end) = (usize::try_from(skip), usize::try_from(skip + len));
     match (start, end) {
-        (Ok(s), Ok(e)) => body.get(s..e).map(|slice| (slice.to_vec(), held)).ok_or(EngineError::Truncated),
+        (Ok(s), Ok(e)) => body.get(s..e).map(|slice| (slice.to_vec(), held, final_url)).ok_or(EngineError::Truncated),
         _ => Err(EngineError::Truncated),
     }
 }
