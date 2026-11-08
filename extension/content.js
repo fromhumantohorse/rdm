@@ -696,7 +696,9 @@
     document.addEventListener(
       "click",
       (e) => {
-        if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+        // A click made by the page's own script (`link.click()`): left to Safari and its per-site
+        // download permission. Only the user's own clicks go to RDM.
+        if (!e.isTrusted || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
         const link = e.composedPath().find((n) => n.tagName === "A" && isHttp(n.href));
         if (!link || !wanted(link.download || new URL(link.href).pathname)) return;
         e.preventDefault();

@@ -9,7 +9,7 @@ import vm from "node:vm";
 import * as shared from "../shared.js";
 
 // Exercise the worker through browser events, with only the browser/network boundaries mocked.
-function worker({ stores = [], cookieError = false, source } = {}) {
+function worker({ stores = [], cookieError = false, source, firefox = false, cookies = [{ name: "secret", value: "profile-cookie", sameSite: "strict" }] } = {}) {
   const listeners = {};
   const event = (name) => ({ addListener: (fn) => { listeners[name] = fn; } });
   const requests = [];
@@ -31,7 +31,7 @@ function worker({ stores = [], cookieError = false, source } = {}) {
       getAll: (query) => {
         cookieQueries.push(query);
         if (cookieError) throw new Error("Cookie API unavailable");
-        return Promise.resolve([{ name: "secret", value: "profile-cookie", sameSite: "strict" }]);
+        return Promise.resolve(cookies);
       },
     },
     action: {
@@ -47,6 +47,13 @@ function worker({ stores = [], cookieError = false, source } = {}) {
       cancel: async () => {}, erase: async () => {},
     },
   };
+  // Firefox takes responses over as their headers arrive (`blocking`); the other listener sniffs media.
+  if (firefox) {
+    chrome.webRequest = {
+      OnHeadersReceivedOptions: { BLOCKING: "blocking" },
+      onHeadersReceived: { addListener: (fn, _filter, options) => { listeners[options.includes("blocking") ? "response" : "sniff"] = fn; } },
+    };
+  }
   const context = vm.createContext({
     ...shared, chrome, navigator: { userAgent: "Chrome/140" }, URL, Response, AbortSignal, setTimeout, clearTimeout,
     fetch: async (url, options) => {
@@ -56,7 +63,8 @@ function worker({ stores = [], cookieError = false, source } = {}) {
         : new Response(null, { status: 202 });
     },
   });
-  vm.runInContext(source ?? readFileSync(new URL("../background.js", import.meta.url), "utf8").replace(/^import .*\n/, ""), context);
+  // `\r?`: a Windows checkout (core.autocrlf) ends lines with CRLF.
+  vm.runInContext(source ?? readFileSync(new URL("../background.js", import.meta.url), "utf8").replace(/^import .*\r?\n/, ""), context);
   const download = (tab, referrer = "https://files.example.com/page") => new Promise((resolve) => {
     listeners.message({ kind: "download", url: "https://files.example.com/a.zip" },
       { id: chrome.runtime.id, tab: { ...tab, url: referrer }, url: referrer }, resolve);
@@ -97,6 +105,20 @@ test("an HTTP referrer cannot forward HTTPS SameSite=Strict cookies", async () =
   const app = worker();
   assert.equal(await app.download({ id: 7 }, "http://files.example.com/page"), true);
   assert.equal(app.requests.at(-1).body.cookies, "");
+});
+
+test("a download in a frame of another site gets none of that site's own cookies (Firefox)", async () => {
+  // Cookies Firefox does send to a frame of another site when not partitioned: kept out all the same.
+  const app = worker({ firefox: true, cookies: [{ name: "sid", value: "1", sameSite: "no_restriction" }, { name: "pref", value: "2", sameSite: "lax" }] });
+  const framed = (page) => app.listeners.response({
+    url: "https://files.example.com/a.zip", type: "sub_frame", method: "GET", statusCode: 200,
+    responseHeaders: [{ name: "Content-Disposition", value: "attachment; filename=a.zip" }],
+    originUrl: page, documentUrl: page, frameAncestors: [{ url: page, frameId: 0 }],
+  });
+  assert.equal((await framed("https://ads.example.net/")).cancel, true, "taken over by RDM");
+  assert.equal(app.requests.at(-1).body.cookies, "", "embedded by another site: partitioned, Firefox sent none");
+  await framed("https://www.example.com/");
+  assert.equal(app.requests.at(-1).body.cookies, "sid=1; pref=2", "a frame of the page's own site");
 });
 
 test("a failed hand-off resumes a download already paused by the worker", async () => {

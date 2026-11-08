@@ -439,14 +439,18 @@ async function intercept(item) {
  * headers arrive: RDM takes it over and the browser never fetches it. `onCreated` stays as the
  * fallback (downloads started otherwise, RDM refusing).
  */
-async function interceptResponse({ url, method, statusCode, responseHeaders, incognito, cookieStoreId, originUrl, documentUrl }) {
+async function interceptResponse({ url, type, method, statusCode, responseHeaders, incognito, cookieStoreId, originUrl, documentUrl, frameAncestors }) {
   // Only what RDM can fetch again on its own: a plain GET, outside private windows.
   if (method !== "GET" || statusCode < 200 || statusCode >= 300 || incognito || !isWeb(url)) return {};
   const filename = downloadName(url, header(responseHeaders, "content-disposition"), header(responseHeaders, "content-type"));
   if (!filename) return {};
   const captured = await captureList();
   if (captured == null || !(isCapturable(captured, filename) || isCapturable(captured, url))) return {};
-  const sent = await sendToApp({ url, filename, referrer: originUrl ?? documentUrl, storeId: cookieStoreId }).catch(() => false);
+  // A frame of another site than the page's (any page can embed one, unasked): Firefox sent it
+  // none of that site's own cookies (partitioned, or held back by SameSite). RDM adds none either.
+  const topUrl = type === "sub_frame" ? (frameAncestors?.at(-1)?.url ?? documentUrl) : undefined;
+  const storeId = topUrl && !sameSite(url, topUrl) ? null : cookieStoreId;
+  const sent = await sendToApp({ url, filename, referrer: originUrl ?? documentUrl, topUrl, storeId }).catch(() => false);
   if (sent !== true) return {}; // the browser downloads it (and says why, below)
   toast(t("sentName", filename));
   return { cancel: true };
