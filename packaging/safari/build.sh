@@ -20,8 +20,8 @@ cp -R "$root/extension" "$work/extension"
 rm -rf "$work/extension/test"
 # The converter says Safari does not take `background.type`, and a worker starting with `import`
 # would not even load: a plain script here, with shared.js inside.
-{ sed 's/^export //' "$root/extension/shared.js"; sed '/^import /d' "$root/extension/background.js"; } >"$work/extension/background.js"
-rm "$work/extension/shared.js"
+sh "$root/packaging/safari/bundle-worker.sh" "$root" "$work/extension/background.js"
+rm "$work/extension/shared.js" "$work/extension/public-suffix-data.js"
 if command -v node >/dev/null; then node --check "$work/extension/background.js"; fi
 # 16.4: the first Safari with `storage.session`.
 jq 'del(.key, .minimum_chrome_version, .background.type)

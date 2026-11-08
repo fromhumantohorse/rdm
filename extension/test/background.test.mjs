@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import vm from "node:vm";
 import * as shared from "../shared.js";
 
 // Exercise the worker through browser events, with only the browser/network boundaries mocked.
-function worker({ stores = [], cookieError = false } = {}) {
+function worker({ stores = [], cookieError = false, source } = {}) {
   const listeners = {};
   const event = (name) => ({ addListener: (fn) => { listeners[name] = fn; } });
   const requests = [];
@@ -52,7 +56,7 @@ function worker({ stores = [], cookieError = false } = {}) {
         : new Response(null, { status: 202 });
     },
   });
-  vm.runInContext(readFileSync(new URL("../background.js", import.meta.url), "utf8").replace(/^import .*\n/, ""), context);
+  vm.runInContext(source ?? readFileSync(new URL("../background.js", import.meta.url), "utf8").replace(/^import .*\n/, ""), context);
   const download = (tab, referrer = "https://files.example.com/page") => new Promise((resolve) => {
     listeners.message({ kind: "download", url: "https://files.example.com/a.zip" },
       { id: chrome.runtime.id, tab: { ...tab, url: referrer }, url: referrer }, resolve);
@@ -65,6 +69,21 @@ test("an unknown private cookie store never reads the normal profile", async () 
   assert.equal(await app.download({ id: 7, incognito: true }), true);
   assert.equal(app.cookieQueries.length, 0);
   assert.equal(app.requests.at(-1).body.cookies, "");
+});
+
+const gitSh = path.join(process.env.ProgramFiles ?? "C:/Program Files", "Git/bin/sh.exe");
+test("Safari's bundled plain worker includes the public suffix rules and handles a download", { skip: process.platform === "win32" && !existsSync(gitSh) }, async (t) => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "rdm-safari-worker-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const root = fileURLToPath(new URL("../../", import.meta.url));
+  const output = path.join(directory, "background.js");
+  const bundled = spawnSync(process.platform === "win32" ? gitSh : "sh", [path.join(root, "packaging/safari/bundle-worker.sh"), root, output], { encoding: "utf8", windowsHide: true });
+  assert.equal(bundled.status, 0, bundled.stderr);
+  const source = readFileSync(output, "utf8");
+  assert.doesNotMatch(source, /^(?:import|export) /m);
+  const app = worker({ source });
+  assert.equal(await app.download({ id: 7 }), true);
+  assert.equal(app.requests.at(-1).body.cookies, "secret=profile-cookie");
 });
 
 test("a known private store is used for the hand-off", async () => {

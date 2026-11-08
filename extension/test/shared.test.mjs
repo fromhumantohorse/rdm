@@ -66,7 +66,7 @@ test("site comparison for SameSite cookies", () => {
   assert.equal(siteOf("https://www.youtube.com/watch"), "youtube.com");
   assert.equal(siteOf("https://rr3---sn.googlevideo.com/x"), "googlevideo.com");
   assert.equal(siteOf("garbage"), "");
-  // Same cases as `sites_as_cookies_see_them` in RDM's `engine/src/net.rs`.
+  // Registrable domains stay separate across registries and shared hosting platforms.
   assert.equal(siteOf("https://www.bbc.co.uk/"), siteOf("https://media.bbc.co.uk/x"));
   assert.notEqual(siteOf("https://www.bbc.co.uk/"), siteOf("https://evil.co.uk/"), "a country's second level is not a site");
   assert.equal(siteOf("https://example.com/"), siteOf("https://EXAMPLE.com.:8443/x"));
@@ -90,6 +90,16 @@ test("SameSite cookies require matching schemes and valid web sites", () => {
   assert.ok(!sameSite("http://127.0.0.1/", "http://10.0.0.1/"));
   assert.ok(!sameSite("invalid", "invalid"));
   assert.ok(!sameSite("file:///one", "file:///two"));
+});
+
+test("SameSite uses complete public suffix rules, including private hosts and exceptions", () => {
+  assert.equal(sameSite("https://alice.eu.org/", "https://bob.eu.org/"), false);
+  assert.equal(sameSite("https://alice.s3.eu-west-1.amazonaws.com/", "https://bob.s3.eu-west-1.amazonaws.com/"), false);
+  assert.equal(sameSite("https://alice.compute.amazonaws.com/", "https://bob.compute.amazonaws.com/"), false);
+  assert.equal(sameSite("https://a.b.ck/", "https://c.b.ck/"), false, "wildcard public suffix");
+  assert.equal(sameSite("https://a.www.ck/", "https://b.www.ck/"), true, "exception to the wildcard");
+  assert.equal(sameSite("https://a.city.kawasaki.jp/", "https://b.city.kawasaki.jp/"), true);
+  assert.equal(siteOf("https://www.食狮.公司.cn/"), new URL("https://食狮.公司.cn/").hostname);
 });
 
 test("file name of a Content-Disposition header", () => {

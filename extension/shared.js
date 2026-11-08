@@ -1,6 +1,8 @@
 // Pure helpers shared by the service worker. The capture list itself comes from the app (/config),
 // so the Rust domain stays the single source of truth; this mirrors `domain::is_capturable`.
 
+import { suffixRules } from "./public-suffix-data.js";
+
 // Only URLs lose their ?query and #fragment: in a file name "#" is ordinary ("Clip #42.mp4").
 const extOf = (name = "") => {
   const path = name.includes("://") ? name.split(/[?#]/)[0] : name;
@@ -63,20 +65,10 @@ export const kindOf = (url, type = "") => {
 /** Safari, whatever its version: every other browser says "Chrome" or "Firefox" in its User-Agent. */
 export const isSafari = (ua = "") => /\bVersion\/[\d.]+.*\bSafari\//.test(ua) && !/\b(Chrome|Chromium|Firefox|Edg|OPR)\//.test(ua);
 
-// Same lists as RDM's `engine/src/net.rs`: second levels a country's registry hands out
-// (`co.uk`, `ne.jp`), and hosting platforms whose subdomains belong to different people.
-const REGISTRY_SECOND_LEVELS = new Set(
-  "ac co com edu go gob gov gv ltd mil ne net nic nom or org plc sch".split(" "),
-);
-const SHARED_HOSTS = (
-  "appspot.com azurewebsites.net blogspot.com cloudfront.net firebaseapp.com fly.dev github.io gitlab.io " +
-  "glitch.me herokuapp.com netlify.app neocities.org onrender.com pages.dev s3.amazonaws.com tumblr.com " +
-  "vercel.app web.app wordpress.com workers.dev"
-).split(" ");
-
 /**
- * Registrable-domain approximation, as RDM's `net::same_site`: the last two labels, one more under
- * a country's registry (`bbc.co.uk`, not `co.uk`) or a shared hosting platform (`alice.github.io`).
+ * Registrable domain using the bundled Public Suffix List, including private hosting platforms,
+ * wildcard rules and exceptions. A small hand-picked suffix list can expose Strict cookies to
+ * unrelated tenants (e.g. alice.eu.org and bob.eu.org).
  */
 export const siteOf = (url) => {
   try {
@@ -84,10 +76,13 @@ export const siteOf = (url) => {
     // IP addresses have no registrable domain: 127.0.0.1 and 10.0.0.1 are different sites.
     if (host.startsWith("[") || /^\d+(?:\.\d+){3}$/.test(host)) return host;
     const labels = host.split(".");
-    const [second = "", tld = ""] = labels.slice(-2);
-    const shared = SHARED_HOSTS.find((s) => host.endsWith(`.${s}`));
-    const registry = tld.length === 2 && REGISTRY_SECOND_LEVELS.has(second) ? 2 : 1;
-    const suffix = shared ? shared.split(".").length : registry;
+    let suffix = 1; // implicit default rule: *
+    for (let i = 0; i < labels.length; i++) {
+      const candidate = labels.slice(i).join(".");
+      if (suffixRules.has(`!${candidate}`)) return candidate;
+      if (suffixRules.has(candidate)) suffix = Math.max(suffix, labels.length - i);
+      if (i > 0 && suffixRules.has(`*.${candidate}`)) suffix = Math.max(suffix, labels.length - i + 1);
+    }
     return labels.slice(-(suffix + 1)).join(".");
   } catch {
     return "";
