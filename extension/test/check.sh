@@ -2,7 +2,7 @@
 # Static checks + unit tests for the extension: sh extension/test/check.sh (needs Node ≥ 20).
 set -eu
 cd "$(dirname "$0")/.."
-for f in background.js shared.js; do node --check --input-type=module < "$f" && echo "syntax OK  $f"; done
+for f in background.js shared.js public-suffix-data.js; do node --check --input-type=module < "$f" && echo "syntax OK  $f"; done
 for f in content.js youtube.js capture.js relay.js; do node --check "$f" && echo "syntax OK  $f"; done
 
 # Chrome manifest as is, Firefox manifest as derived by packaging/firefox/build.sh, and the
@@ -56,3 +56,4 @@ for (const f of ["background.js", "content.js"]) {
 console.log(`i18n   OK  ${locales.join(" + ")} (${en.length} messages)`)'
 node --test test/*.test.mjs
 node --test ../packaging/test/*.test.mjs
+node --test ../.github/test/*.test.mjs

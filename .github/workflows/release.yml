@@ -46,6 +46,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false # build scripts and packages never see the token
+      - name: Validate the release version
+        run: node .github/check-release-version.mjs
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch, 2026-09-03
         with:
           toolchain: stable
@@ -245,9 +247,10 @@ jobs:
           notes=docs/releases/$tag.md
           if ! gh release view "$tag" >/dev/null 2>&1; then
             if [ -f "$notes" ]; then
-              gh release create "$tag" --verify-tag --title "RDM ${tag#v}" --notes-file "$notes"
+              gh release create "$tag" --draft --verify-tag --title "RDM ${tag#v}" --notes-file "$notes"
             else
-              gh release create "$tag" --verify-tag --title "RDM ${tag#v}" --generate-notes
+              gh release create "$tag" --draft --verify-tag --title "RDM ${tag#v}" --generate-notes
             fi
           fi
           gh release upload "$tag" --clobber dist/*.msi dist/*.deb dist/*.rpm dist/*.dmg dist/*.tar.gz dist/*.xpi dist/*.zip dist/*.sig dist/updates.json
+          gh release edit "$tag" --draft=false

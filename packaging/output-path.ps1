@@ -3,8 +3,10 @@ function Initialize-ExtensionOutput([string]$Root, [string]$Output) {
     $outputPath = [IO.Path]::GetFullPath($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Output)).TrimEnd('\', '/')
     $rootPath = [IO.Path]::GetFullPath($Root).TrimEnd('\', '/')
     $comparison = [StringComparison]::OrdinalIgnoreCase
-    if (($rootPath + '\').StartsWith($outputPath + '\', $comparison) -or
-        ($outputPath + '\').StartsWith($rootPath + '\extension\', $comparison)) {
+    $inside = ($outputPath + '\').StartsWith($rootPath + '\', $comparison)
+    $buildOutput = ($outputPath + '\').StartsWith($rootPath + '\target\', $comparison) -or
+        ($outputPath + '\').StartsWith($rootPath + '\dist\', $comparison)
+    if (($rootPath + '\').StartsWith($outputPath + '\', $comparison) -or ($inside -and -not $buildOutput)) {
         throw "Refusing output directory overlapping the repository/source: $outputPath"
     }
     # Reject junctions/symlinks in the path as well: their physical target could be the source tree.
