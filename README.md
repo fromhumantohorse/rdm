@@ -85,7 +85,7 @@ Measured on a 100 MB file (integrity checked by SHA-256 against `curl`):
 
 ## Updates
 
-RDM looks for a new version on this repository at start, then once a day: a single request to GitHub's API, nothing else (can be turned off in **Settings → Updates**, where *Check now* also checks on demand). When a version is out, a card appears in the sidebar; one click installs it, **silently, from RDM itself** — no web page, no installer window. With **Install automatically** on, RDM does it by itself as soon as nothing is downloading.
+RDM looks for a new version on this repository at start, then once a day: a single request to GitHub's API, nothing else (can be turned off in **Settings → Updates**, where *Check now* also checks on demand). When a version is out, a card appears in the sidebar; one click installs it, **silently, from RDM itself** — no web page, no installer window. With **Install automatically** on, RDM does it by itself as soon as nothing is downloading, waiting for your answer, or being checked (checksum, VirusTotal).
 
 1. RDM downloads the package from GitHub (with retries if the connection drops), then **checks it**: size and SHA-256 published by GitHub, the file's own format, and an **Ed25519 signature** made by the release workflow with a key only it holds. A tampered or substituted package — even through a compromised GitHub account — is refused.
 2. It installs it:
@@ -150,7 +150,7 @@ Privacy: an uploaded file is shared with antivirus vendors. Do not analyse your 
 - Otherwise RDM opens `about:debugging`: **Load Temporary Add-on…** → `manifest.json` of the folder shown. A temporary add-on goes away when Firefox closes. Firefox Developer Edition, Nightly, ESR (`xpinstall.signatures.required` set to `false`) and LibreWolf keep the `rdm-firefox.xpi` file RDM writes next to it installed for good.
 - Firefox gives each installation a random origin (`moz-extension://…`): the connector pairs it with RDM automatically. Without the connector, **RDM asks you to allow it** → **Allow**; until then the extension's icon shows a **!** badge and a message in the page explains why (✕ postpones the question by 30 minutes; **Deny** rejects it until RDM restarts).
 
-**Safari** (16.4 or later, macOS): the extension is inside `RDM.app`, once RDM has been started from Applications. **Install** opens Safari's settings on it: tick **RDM**, and allow it on every website. Without an Apple Developer signature, Safari only shows it with **Allow unsigned extensions** (Safari's developer settings), which Safari forgets each time it closes. Safari has no downloads API and starts no connector: the extension takes over the clicks on links to captured types, and talks to the local bridge after **RDM asks you to allow it** once.
+**Safari** (16.4 or later, macOS): the extension is inside `RDM.app`, once RDM has been started from Applications. **Install** opens Safari's settings on it: tick **RDM**, and allow it on every website. Without an Apple Developer signature, Safari only shows it with **Allow unsigned extensions** (Safari's developer settings), which Safari forgets each time it closes. Safari has no downloads API and starts no connector: the extension takes over your clicks on links to captured types (a page's own scripted clicks stay Safari's), and talks to the local bridge after **RDM asks you to allow it** once.
 
 If RDM is closed, the browser downloads normally.
 
