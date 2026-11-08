@@ -61,16 +61,17 @@ impl Manager {
     }
 
     /// Automatic updates: installs the release on offer when RDM can do it without any prompt
-    /// (Windows installer, Linux binary in the user's folders) and nothing is downloading.
+    /// (Windows installer, Linux binary in the user's folders) and quitting interrupts nothing.
     pub(super) fn auto_install(self: &Arc<Self>) {
         let silent = matches!(update::method(), update::Method::Msi | update::Method::Binary);
         let ready = matches!(self.update_state(), update::State::Available(ref r) if update::installs_itself(r));
         if !silent || !ready || !self.with_settings(|s| s.auto_update) || self.is_closing() {
             return;
         }
-        let stats = self.stats();
-        let recording = lock(&self.entries).iter().any(|e| e.download.is_recording() && *e.download.status() == Status::Running);
-        if stats.running == 0 && stats.queued == 0 && !recording {
+        // A browser download waiting for the user's answer lives in memory only, and the browser
+        // has already let it go: quitting now would lose it.
+        let waiting = !lock(&self.to_confirm).is_empty();
+        if !waiting && !lock(&self.entries).iter().any(Entry::keeps_rdm_open) {
             self.install_update();
         }
     }

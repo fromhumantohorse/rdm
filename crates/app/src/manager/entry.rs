@@ -155,6 +155,12 @@ impl Entry {
         *self.download.status() == Status::Completed && (1..=virustotal::MAX_UPLOAD).contains(&size)
     }
 
+    /// Quitting now (an automatic update) would interrupt it: it runs (a recording too) or waits in
+    /// the queue, or its file is being verified or analysed — results kept in memory only.
+    pub(super) fn keeps_rdm_open(&self) -> bool {
+        matches!(self.download.status(), Status::Running | Status::Queued) || self.verify == Verify::Running || matches!(self.scan, Scan::Running(_))
+    }
+
     /// Takes a download slot (browser recordings do not: the browser paces them).
     pub(super) fn occupies_slot(&self) -> bool {
         *self.download.status() == Status::Running && !self.download.is_recording()
@@ -419,5 +425,30 @@ mod tests {
         assert_eq!(elsewhere.headers.len(), 1, "only the secrets go");
 
         assert!(!cookie(&moved("http://www.example.com/a.zip")), "never in clear");
+    }
+
+    /// Regression: an automatic update quit RDM while a finished file was being verified or
+    /// analysed: the verdict, kept in memory only, was never given.
+    #[test]
+    fn an_automatic_update_waits_for_what_quitting_would_interrupt() {
+        let entry = |status: fn(&mut Download)| {
+            let mut download = Download::new("https://x.io/a.zip".parse().unwrap(), std::env::temp_dir().join("a.zip"), 8);
+            status(&mut download);
+            Entry::new(download, Vec::new(), 0, 0)
+        };
+        let completed = |d: &mut Download| {
+            d.start().unwrap();
+            d.complete().unwrap();
+        };
+        assert!(entry(|_| {}).keeps_rdm_open(), "queued");
+        assert!(entry(|d| d.start().unwrap()).keeps_rdm_open(), "running");
+        assert!(!entry(|d| d.pause().unwrap()).keeps_rdm_open(), "paused: resumed after the update");
+        assert!(!entry(completed).keeps_rdm_open());
+        let mut verifying = entry(completed);
+        verifying.verify = Verify::Running;
+        assert!(verifying.keeps_rdm_open());
+        let mut scanning = entry(completed);
+        scanning.scan = Scan::Running(Stage::Uploading(0.5));
+        assert!(scanning.keeps_rdm_open());
     }
 }
